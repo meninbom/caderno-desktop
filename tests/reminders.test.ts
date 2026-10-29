@@ -1,0 +1,6 @@
+import {describe,it,expect} from 'vitest';import {LocalReminderScheduler} from '../electron/reminders';
+describe('LocalReminderScheduler',()=>{
+ it('uses injected clock, persists claims through repository callback, applies batch cap and drains after restart',()=>{let now=123,all=Array.from({length:23},(_,i)=>({id:String(i),title:`T${i}`})),delivered:string[]=[];const repo=(clock:number,limit:number)=>{expect(clock).toBe(now);const batch=all.splice(0,limit);delivered.push(...batch.map(t=>t.id));return batch};const shown:string[]=[];const notifications={show:(task:{id:string})=>shown.push(task.id),fallback:()=>{throw new Error('unexpected')}};const first=new LocalReminderScheduler(repo,notifications,()=>now);expect(first.runOnce()).toBe(10);expect(shown).toHaveLength(10);expect(first.runOnce()).toBe(10);const restarted=new LocalReminderScheduler(repo,notifications,()=>now);expect(restarted.runOnce()).toBe(3);expect(restarted.runOnce()).toBe(0);expect(new Set(delivered).size).toBe(23);
+ });
+ it('reports native notification failures through fallback',()=>{const fallback:string[]=[];const scheduler=new LocalReminderScheduler(()=>[{id:'x',title:'Reminder'}],{show:()=>{throw new Error('denied')},fallback:t=>fallback.push(t.title)},()=>1);expect(scheduler.runOnce()).toBe(1);expect(fallback).toEqual(['Reminder']);});
+});

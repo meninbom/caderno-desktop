@@ -1,0 +1,431 @@
+import Database from "better-sqlite3";
+import { NoteFull, NoteMeta, ListNotesQuery, Notebook, Tag, SidebarCounts, SortOrder, NotebookStack, NoteLinkTarget, AttachmentJob } from "../../shared/ipc";
+import { extractPreviewHtml, extractVisibleText } from "./db";
+import crypto from "node:crypto";
+import fs from "node:fs";
+import path from "node:path";
+import { parseSearchQuery, toFtsExpression } from "../../shared/search";
+
+interface NoteRow {
+  id: string;
+  notebook_id: number | null;
+  title: string;
+  content_html: string;
+  content_text: string;
+  favorited: number;
+  pinned: number;
+  deleted_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+let uidCounter = 0;
+export function uuid(): string {
+  void uidCounter;
+  return crypto.randomUUID();
+}
+
+const ORDER: Record<SortOrder, string> = {
+  updated_desc: "pinned DESC, updated_at DESC",
+  updated_asc: "updated_at ASC",
+  created_desc: "created_at DESC",
+  title_asc: "title COLLATE NOCASE ASC",
+};
+
+const META_COLS = `n.id, n.notebook_id, n.title, n.favorited, n.pinned, n.deleted_at, n.created_at, n.updated_at, n.content_text`;
+
+function tagsForNotes(db: Database.Database, ids: string[]): Map<string, { id: number; name: string }[]> {
+  const out = new Map<string, { id: number; name: string }[]>();
+  if (ids.length === 0) return out;
+  const placeholders = ids.map(() => "?").join(",");
+  const rows = db
+    .prepare(
+      `SELECT nt.note_id, t.id, t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
+       WHERE nt.note_id IN (${placeholders}) ORDER BY t.name COLLATE NOCASE`
+    )
+    .all(...ids) as { note_id: string; id: number; name: string }[];
+  for (const r of rows) {
+    const list = out.get(r.note_id) ?? [];
+    list.push({ id: r.id, name: r.name });
+    out.set(r.note_id, list);
+  }
+  return out;
+}
+
+function toMeta(db: Database.Database, rows: NoteRow[]): NoteMeta[] {
+  const tags = tagsForNotes(db, rows.map(r => r.id));
+  return rows.map(r => ({
+    id: r.id,
+    notebookId: r.notebook_id,
+    title: r.title,
+    favorited: r.favorited === 1,
+    pinned: r.pinned === 1,
+    tags: tags.get(r.id) ?? [],
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
+    deletedAt: r.deleted_at,
+    preview: extractPreviewHtml(r.content_text),
+  }));
+}
+
+export class NotesRepo {
+  constructor(private db: Database.Database) {}
+
+  list(q: ListNotesQuery): NoteMeta[] {
+    const where: string[] = [];
+    const params: unknown[] = [];
+    if (q.view === "trash") {
+      where.push("n.deleted_at IS NOT NULL");
+    } else {
+      where.push("n.deleted_at IS NULL");
+    }
+    if (q.view === "favorites") where.push("n.favorited = 1");
+    if (q.view === "notebook" && q.notebookId !== undefined) {
+      where.push("n.notebook_id = ?");
+      params.push(q.notebookId);
+    }
+    if (q.view === "unfiled") {
+      where.push("n.notebook_id IS NULL");
+    }
+    if (q.view === "tag" && q.tagId !== undefined) {
+      where.push("EXISTS (SELECT 1 FROM note_tags nt2 WHERE nt2.note_id = n.id AND nt2.tag_id = ?)");
+      params.push(q.tagId);
+    }
+    if (q.query && q.query.trim()) {
+      const parsed = parseSearchQuery(q.query);
+      const expression = toFtsExpression(parsed.text);
+      if(parsed.type==='attachment'&&!expression) where.push("EXISTS (SELECT 1 FROM attachment_text_fts af WHERE af.note_id=n.id)");
+      if (expression) {
+        if (parsed.type === "attachment") {
+          where.push("n.id IN (SELECT note_id FROM attachment_text_fts WHERE attachment_text_fts MATCH ?)"); params.push(expression);
+        } else if (parsed.type === "transcription") {
+          where.push("n.id IN (SELECT note_id FROM attachment_text_fts WHERE attachment_text_fts MATCH ? AND source_kind='transcription')"); params.push(expression);
+        } else {
+          where.push("(n.id IN (SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?) OR n.id IN (SELECT note_id FROM attachment_text_fts WHERE attachment_text_fts MATCH ?))"); params.push(expression, expression);
+        }
+      }
+      if (parsed.notebook) {
+        where.push("EXISTS (SELECT 1 FROM notebooks sn WHERE sn.id=n.notebook_id AND sn.name LIKE ? ESCAPE '\\' COLLATE NOCASE)");
+        params.push(`%${parsed.notebook.replace(/[\\%_]/g, "\\$&")}%`);
+      }
+      for (const tag of parsed.tags) {
+        where.push("EXISTS (SELECT 1 FROM note_tags st JOIN tags t ON t.id=st.tag_id WHERE st.note_id=n.id AND t.name LIKE ? ESCAPE '\\' COLLATE NOCASE)");
+        params.push(`%${tag.replace(/[\\%_]/g, "\\$&")}%`);
+      }
+      if (parsed.before) { where.push("n.created_at < ?"); params.push(Date.parse(`${parsed.before}T00:00:00.000Z`)); }
+      if (parsed.after) { where.push("n.created_at >= ?"); params.push(Date.parse(`${parsed.after}T00:00:00.000Z`)); }
+      if (parsed.type === "note") { where.push("n.id IN (SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?)"); params.push(expression); }
+    }
+    const sql = `SELECT ${META_COLS} FROM notes n WHERE ${where.join(" AND ")} ORDER BY ${ORDER[q.order ?? "updated_desc"]}`;
+    const rows = this.db.prepare(sql).all(...params) as unknown as NoteRow[];
+    const results=toMeta(this.db, rows);
+    if(q.query?.trim()) {
+      const parsed=parseSearchQuery(q.query), expression=toFtsExpression(parsed.text);
+      if(expression && parsed.type!=='note') for(const item of results){
+        const kind=parsed.type==='transcription'?" AND source_kind='transcription'":"";
+        const hit=this.db.prepare(`SELECT source_name AS sourceName,source_kind AS sourceKind,snippet(attachment_text_fts,4,'','', '…',14) AS snippet FROM attachment_text_fts WHERE attachment_text_fts MATCH ? AND note_id=?${kind} LIMIT 1`).get(expression,item.id) as {sourceName:string;sourceKind:"transcription"|"attachment"|"text"|"pdf"|"ocr";snippet:string}|undefined;
+        if(hit){item.matchSource=hit.sourceName;item.matchSourceKind=hit.sourceKind==='transcription'?'transcription':'attachment';item.matchSnippet=hit.snippet;}
+      }
+    }
+    return results;
+  }
+
+  get(id: string): NoteFull | null {
+    const row = this.db.prepare(`SELECT n.* FROM notes n WHERE n.id = ?`).get(id) as NoteRow | undefined;
+    if (!row) return null;
+    const [meta] = toMeta(this.db, [row]);
+    return { ...meta, contentHtml: row.content_html };
+  }
+
+  find(query: string, limit: number): NoteLinkTarget[] {
+    const term = query.trim();
+    if (!term) return [];
+    const rows = this.db.prepare(`SELECT id,title,content_text FROM notes WHERE deleted_at IS NULL AND (title LIKE ? ESCAPE '\\' OR content_text LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`)
+      .all(`%${term.replace(/[\\%_]/g, "\\$&").replace(/\[\]/g, "")}%`, `%${term.replace(/[\\%_]/g, "\\$&")}%`, limit) as { id: string; title: string; content_text: string }[];
+    return rows.map(r => ({ id: r.id, title: r.title || "Sem título", preview: extractPreviewHtml(r.content_text) }));
+  }
+
+  update(id: string, patch: { title?: string; contentHtml?: string }): NoteFull | null {
+    const existing = this.db.prepare("SELECT id FROM notes WHERE id = ?").get(id);
+    if (!existing) return null;
+    const nextTitle = patch.title !== undefined ? patch.title : undefined;
+    const nextHtml = patch.contentHtml !== undefined ? patch.contentHtml : undefined;
+    const text = nextHtml !== undefined ? extractVisibleText(nextHtml) : undefined;
+    const now = Date.now();
+    this.db
+      .prepare(
+        `UPDATE notes SET
+           title = COALESCE(?, title),
+           content_html = COALESCE(?, content_html),
+           content_text = COALESCE(?, content_text),
+           updated_at = ?
+         WHERE id = ?`
+      )
+      .run(nextTitle ?? null, nextHtml ?? null, text ?? null, now, id);
+    return this.get(id);
+  }
+
+  create(input: { notebookId?: number | null; title?: string; contentHtml?: string }): NoteFull {
+    const id = uuid();
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO notes (id, notebook_id, title, content_html, content_text, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`
+      )
+      .run(
+        id,
+        input.notebookId ?? null,
+        input.title ?? "",
+        input.contentHtml ?? "",
+        input.contentHtml ? extractVisibleText(input.contentHtml) : "",
+        now,
+        now
+      );
+    const created = this.get(id);
+    if (!created) throw new Error("Falha ao criar nota");
+    return created;
+  }
+
+  findByClipSource(sourceUrl: string): { title: string } | null {
+    return this.db.prepare("SELECT n.title FROM clipper_sources c JOIN notes n ON n.id=c.note_id WHERE c.source_url=? LIMIT 1").get(sourceUrl) as { title: string } | null;
+  }
+  recordClipSource(noteId: string, sourceUrl: string, sourceTitle: string): void {
+    this.db.prepare("INSERT INTO clipper_sources(source_key,note_id,source_url,source_title,captured_at) VALUES(?,?,?,?,?)").run(crypto.createHash("sha256").update(sourceUrl).digest("hex"), noteId, sourceUrl, sourceTitle, Date.now());
+  }
+
+  move(id: string, notebookId: number | null): NoteFull | null {
+    this.db.prepare("UPDATE notes SET notebook_id = ?, updated_at = ? WHERE id = ?").run(notebookId, Date.now(), id);
+    return this.get(id);
+  }
+
+  setFlag(id: string, field: "favorited" | "pinned", value: boolean): NoteFull | null {
+    this.db.prepare(`UPDATE notes SET ${field} = ? WHERE id = ?`).run(value ? 1 : 0, id);
+    return this.get(id);
+  }
+
+  softDelete(id: string): NoteFull | null {
+    this.db.prepare("UPDATE notes SET deleted_at = ? WHERE id = ? AND deleted_at IS NULL").run(Date.now(), id);
+    return this.get(id);
+  }
+
+  restore(id: string): NoteFull | null {
+    this.db.prepare("UPDATE notes SET deleted_at = NULL WHERE id = ?").run(id);
+    return this.get(id);
+  }
+
+  purge(id: string): boolean {
+    const result = this.db.prepare("DELETE FROM notes WHERE id = ?").run(id);
+    return result.changes > 0;
+  }
+
+  emptyTrash(): number {
+    return this.db.prepare("DELETE FROM notes WHERE deleted_at IS NOT NULL").run().changes;
+  }
+
+  markdownOfNote(id: string): { title: string; contentHtml: string; contentText: string; tags: { id: number; name: string }[]; notebookName: string | null; createdAt: number; updatedAt: number } | null {
+    const row = this.db.prepare("SELECT n.*, nb.name AS notebook_name FROM notes n LEFT JOIN notebooks nb ON nb.id = n.notebook_id WHERE n.id = ?").get(id) as (NoteRow & { notebook_name: string | null }) | undefined;
+    if (!row) return null;
+    const tags = tagsForNotes(this.db, [id]).get(id) ?? [];
+    return {
+      title: row.title,
+      contentHtml: row.content_html,
+      contentText: row.content_text,
+      tags,
+      notebookName: row.notebook_name,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+    };
+  }
+}
+
+export class AttachmentJobsRepo {
+  constructor(private db:Database.Database){}
+  recover():void { this.db.prepare("UPDATE attachment_jobs SET status='queued',updated_at=?,error=NULL WHERE status IN ('running','cancel_requested')").run(Date.now()); }
+  list():AttachmentJob[]{return this.db.prepare("SELECT j.id,j.attachment_id AS attachmentId,a.note_id AS noteId,a.file_name AS fileName,j.status,j.progress,j.checkpoint,j.total_pages AS totalPages,j.attempts,j.error FROM attachment_jobs j JOIN attachments a ON a.id=j.attachment_id WHERE j.status!='completed' OR j.updated_at>strftime('%s','now')*1000-86400000 ORDER BY CASE j.status WHEN 'running' THEN 0 WHEN 'queued' THEN 1 ELSE 2 END,j.updated_at DESC LIMIT 100").all() as unknown as AttachmentJob[];}
+  next():{id:number;attachmentId:number;fileName:string;storedName:string}|undefined{return this.db.transaction(()=>{const row=this.db.prepare("SELECT j.id,j.attachment_id AS attachmentId,a.file_name AS fileName,a.stored_name AS storedName FROM attachment_jobs j JOIN attachments a ON a.id=j.attachment_id WHERE j.status='queued' ORDER BY j.created_at,j.id LIMIT 1").get() as any;if(row)this.db.prepare("UPDATE attachment_jobs SET status='running',attempts=attempts+1,progress=1,updated_at=? WHERE id=?").run(Date.now(),row.id);return row;})();}
+  complete(jobId:number,attachmentId:number,noteId:string,fileName:string,text:string,sourceKind:'text'|'pdf'|'ocr'='text'):void{this.db.transaction(()=>{this.db.prepare("INSERT INTO attachment_text(attachment_id,note_id,source_name,source_kind,content,extractor_version,indexed_at) VALUES(?,?,?,?,?,1,?) ON CONFLICT(attachment_id) DO UPDATE SET note_id=excluded.note_id,source_name=excluded.source_name,source_kind=excluded.source_kind,content=excluded.content,extractor_version=excluded.extractor_version,indexed_at=excluded.indexed_at").run(attachmentId,noteId,fileName,sourceKind,text,Date.now());this.db.prepare("UPDATE attachment_jobs SET status='completed',progress=100,checkpoint=total_pages,error=NULL,updated_at=? WHERE id=?").run(Date.now(),jobId);})();}
+  fail(id:number,error:string):void{this.db.prepare("UPDATE attachment_jobs SET status='error',error=?,progress=0,updated_at=? WHERE id=? AND status!='cancel_requested'").run(error.slice(0,500),Date.now(),id);}
+  progress(id:number,progress:number,checkpoint:number,totalPages=0):void{this.db.prepare("UPDATE attachment_jobs SET progress=?,checkpoint=?,total_pages=MAX(total_pages,?),updated_at=? WHERE id=? AND status='running'").run(Math.max(1,Math.min(99,progress)),checkpoint,totalPages,Date.now(),id);}
+  cancel(id:number):boolean{return this.db.prepare("UPDATE attachment_jobs SET status='cancel_requested',updated_at=? WHERE id=? AND status IN ('queued','running')").run(Date.now(),id).changes>0;}
+  retry(id:number):boolean{return this.db.transaction(()=>{const row=this.db.prepare("SELECT attachment_id FROM attachment_jobs WHERE id=?").get(id) as {attachment_id:number}|undefined;if(!row)return false;this.db.prepare("DELETE FROM attachment_text WHERE attachment_id=?").run(row.attachment_id);return this.db.prepare("UPDATE attachment_jobs SET status='queued',progress=0,checkpoint=0,total_pages=0,error=NULL,updated_at=? WHERE id=?").run(Date.now(),id).changes>0;})();}
+  reindex():number{return this.db.transaction(()=>{this.db.prepare("DELETE FROM attachment_text").run();this.db.prepare("UPDATE attachment_jobs SET status='queued',progress=0,checkpoint=0,total_pages=0,error=NULL,updated_at=?").run(Date.now());return Number((this.db.prepare("SELECT COUNT(*) AS n FROM attachment_jobs WHERE status='queued'").get() as any).n);})();}
+  getAttachment(id:number):{noteId:string;fileName:string;storedName:string}|undefined{return this.db.prepare("SELECT note_id AS noteId,file_name AS fileName,stored_name AS storedName FROM attachments WHERE id=?").get(id) as any;}
+}
+
+export interface TranscriptSegment { startMs:number; endMs:number; text:string }
+export class TranscriptionsRepo {
+  constructor(private db:Database.Database){}
+  config(runtime:string,ffmpeg:string){const cli=path.join(runtime,"whisper-cli.exe"),model=path.join(runtime,"models","ggml-tiny.bin");return {runtimeConfigured:fs.existsSync(cli),modelConfigured:fs.existsSync(model)&&fs.statSync(model).size>50_000_000,ffmpegConfigured:fs.existsSync(ffmpeg),runtime,ffmpeg};}
+  enqueue(noteId:string,attachmentId:number,language:"pt"|"auto"):string {const a=this.db.prepare("SELECT id FROM attachments WHERE id=? AND note_id=?").get(attachmentId,noteId);if(!a)throw new Error("Anexo de áudio não encontrado nesta nota.");const id=crypto.randomUUID(),now=Date.now();this.db.prepare("INSERT INTO transcription_jobs(id,attachment_id,note_id,status,progress,stage,language,created_at,updated_at) VALUES(?,?,?,'queued',0,'Na fila',?,?,?)").run(id,attachmentId,noteId,language,now,now);return id;}
+  list(noteId:string){return this.db.prepare("SELECT id,attachment_id AS attachmentId,note_id AS noteId,status,progress,stage,language,error,created_at AS createdAt,updated_at AS updatedAt FROM transcription_jobs WHERE note_id=? ORDER BY created_at DESC LIMIT 20").all(noteId);}
+  queued(){return this.db.prepare("SELECT j.id,j.attachment_id AS attachmentId,j.note_id AS noteId,j.language,a.file_name AS fileName,a.stored_name AS storedName FROM transcription_jobs j JOIN attachments a ON a.id=j.attachment_id WHERE j.status='queued' ORDER BY j.created_at LIMIT 1").get() as any;}
+  progress(id:string,status:string,progress:number,stage:string){this.db.prepare("UPDATE transcription_jobs SET status=?,progress=?,stage=?,updated_at=? WHERE id=? AND status IN ('queued','converting','transcribing')").run(status,progress,stage,Date.now(),id);}
+  complete(j:any,result:{text:string;segments:TranscriptSegment[];durationMs:number;language:string}){this.db.transaction(()=>{const transcriptId=crypto.randomUUID(),now=Date.now();this.db.prepare("INSERT INTO transcripts(id,attachment_id,note_id,model,language,duration_ms,text,created_at) VALUES(?,?,?,'whisper.cpp b5454 / tiny',?,?,?,?) ON CONFLICT(attachment_id) DO UPDATE SET note_id=excluded.note_id,model=excluded.model,language=excluded.language,duration_ms=excluded.duration_ms,text=excluded.text,created_at=excluded.created_at").run(transcriptId,j.attachmentId,j.noteId,result.language,result.durationMs,result.text,now);const current=this.db.prepare("SELECT id FROM transcripts WHERE attachment_id=?").get(j.attachmentId) as {id:string};this.db.prepare("DELETE FROM transcript_segments WHERE transcript_id=?").run(current.id);const add=this.db.prepare("INSERT INTO transcript_segments(transcript_id,start_ms,end_ms,text) VALUES(?,?,?,?)");for(const s of result.segments)add.run(current.id,s.startMs,s.endMs,s.text);this.db.prepare("INSERT INTO attachment_text(attachment_id,note_id,source_name,source_kind,content,extractor_version,indexed_at) VALUES(?,?,?,'transcription',?,1,?) ON CONFLICT(attachment_id) DO UPDATE SET note_id=excluded.note_id,source_name=excluded.source_name,source_kind='transcription',content=excluded.content,extractor_version=1,indexed_at=excluded.indexed_at").run(j.attachmentId,j.noteId,j.fileName,result.text,now);this.db.prepare("UPDATE transcription_jobs SET status='completed',progress=100,stage='Concluído',error=NULL,updated_at=? WHERE id=?").run(now,j.id);})();}
+  settle(id:string,status:"failed"|"canceled",error?:string){this.db.prepare("UPDATE transcription_jobs SET status=?,progress=CASE WHEN ?='canceled' THEN progress ELSE 0 END,stage=?,error=?,updated_at=? WHERE id=?").run(status,status,status==="canceled"?"Cancelado":"Falha",error?.slice(0,500)??null,Date.now(),id);}
+  cancel(id:string){return this.db.prepare("UPDATE transcription_jobs SET status='canceled',stage='Cancelado',updated_at=? WHERE id=? AND status IN ('queued','converting','transcribing')").run(Date.now(),id).changes>0;}
+  recover():string[]{const active=this.db.prepare("SELECT id FROM transcription_jobs WHERE status IN ('converting','transcribing')").all() as {id:string}[];this.db.prepare("UPDATE transcription_jobs SET status='queued',stage='Retomado após reinício',updated_at=? WHERE status IN ('converting','transcribing')").run(Date.now());return active.map(j=>j.id);}
+  get(noteId:string){const t=this.db.prepare("SELECT id,attachment_id AS attachmentId,model,language,duration_ms AS durationMs,text,created_at AS createdAt FROM transcripts WHERE note_id=? ORDER BY created_at DESC").all(noteId) as any[];return t.map(x=>({...x,segments:this.db.prepare("SELECT start_ms AS startMs,end_ms AS endMs,text FROM transcript_segments WHERE transcript_id=? ORDER BY start_ms").all(x.id)}));}
+}
+
+export class TasksRepo {
+  constructor(private db: Database.Database) {}
+  list(filter:'today'|'upcoming'|'overdue'|'completed'|'all',now=Date.now()): import('../../shared/ipc').Task[] {
+    const d=new Date(now); d.setHours(0,0,0,0); const start=d.getTime(), next=new Date(d); next.setDate(next.getDate()+1); const end=next.getTime();const week=new Date(next);week.setDate(week.getDate()+7);const weekEnd=week.getTime();
+    let where='n.deleted_at IS NULL', args:unknown[]=[];
+    if(filter==='completed')where+=' AND t.is_done=1';
+    if(filter==='today'){where+=' AND t.is_done=0 AND t.due_at>=? AND t.due_at<?';args=[start,end];}
+    if(filter==='upcoming'){where+=' AND t.is_done=0 AND t.due_at>=? AND t.due_at<?';args=[end,weekEnd];}
+    if(filter==='overdue'){where+=' AND t.is_done=0 AND t.due_at IS NOT NULL AND t.due_at<?';args=[start];}
+    return this.db.prepare(`SELECT t.id,t.note_id AS noteId,n.title AS noteTitle,t.title,t.is_done AS done,t.due_at AS dueAt,t.reminder_at AS reminderAt,t.reminder_state AS reminderState,t.created_at AS createdAt,t.updated_at AS updatedAt FROM tasks t JOIN notes n ON n.id=t.note_id WHERE ${where} ORDER BY t.is_done,t.due_at IS NULL,t.due_at,t.created_at`).all(...args).map((r:any)=>({...r,done:!!r.done}));
+  }
+  create(x:{noteId:string;title:string;dueAt:number|null;reminderAt:number|null}):string {const id=uuid(),now=Date.now();this.db.prepare("INSERT INTO tasks(id,note_id,title,due_at,reminder_at,created_at,updated_at) SELECT ?,id,?,?,?,?,? FROM notes WHERE id=? AND deleted_at IS NULL").run(id,x.title,x.dueAt,x.reminderAt,now,now,x.noteId);if(!this.db.prepare('SELECT 1 FROM tasks WHERE id=?').get(id))throw new Error('Nota não encontrada ou na lixeira');return id;}
+  update(x:{id:string;noteId?:string;title?:string;dueAt?:number|null;reminderAt?:number|null;done?:boolean}):boolean {const old=this.db.prepare('SELECT reminder_at FROM tasks WHERE id=?').get(x.id) as {reminder_at:number|null}|undefined;if(!old)return false;if(x.noteId!==undefined&&!this.db.prepare('SELECT 1 FROM notes WHERE id=? AND deleted_at IS NULL').get(x.noteId))throw new Error('Nota não encontrada ou na lixeira');this.db.prepare("UPDATE tasks SET note_id=CASE WHEN ? THEN ? ELSE note_id END,title=COALESCE(?,title),due_at=CASE WHEN ? THEN ? ELSE due_at END,reminder_at=CASE WHEN ? THEN ? ELSE reminder_at END,is_done=COALESCE(?,is_done),reminder_state=CASE WHEN ? THEN 'pending' ELSE reminder_state END,updated_at=? WHERE id=?").run(x.noteId!==undefined?1:0,x.noteId??null,x.title??null,x.dueAt!==undefined?1:0,x.dueAt??null,x.reminderAt!==undefined?1:0,x.reminderAt??null,x.done===undefined?null:x.done?1:0,x.reminderAt!==undefined?1:0,Date.now(),x.id);return true;}
+  delete(id:string):boolean{return this.db.prepare('DELETE FROM tasks WHERE id=?').run(id).changes>0;}
+  deliverDue(now:number,limit=10):import('../../shared/ipc').Task[]{const tx=this.db.transaction(()=>{const rows=this.db.prepare("SELECT t.id FROM tasks t JOIN notes n ON n.id=t.note_id WHERE t.is_done=0 AND n.deleted_at IS NULL AND t.reminder_state='pending' AND t.reminder_at<=? ORDER BY t.reminder_at LIMIT ?").all(now,limit) as {id:string}[];for(const r of rows)this.db.prepare("UPDATE tasks SET reminder_state='delivered',updated_at=? WHERE id=?").run(now,r.id);return rows.map(r=>this.db.prepare('SELECT t.id,t.note_id AS noteId,n.title AS noteTitle,t.title,t.is_done AS done,t.due_at AS dueAt,t.reminder_at AS reminderAt,t.reminder_state AS reminderState,t.created_at AS createdAt,t.updated_at AS updatedAt FROM tasks t JOIN notes n ON n.id=t.note_id WHERE t.id=?').get(r.id) as any);});return tx();}
+}
+
+export class EventsRepo {
+  constructor(private db:Database.Database){}
+  list(startAt:number,endAt:number):import('../../shared/ipc').CalendarEvent[]{return this.db.prepare('SELECT e.id,e.note_id AS noteId,n.title AS noteTitle,e.title,e.description,e.start_at AS startAt,e.end_at AS endAt,e.time_zone AS timeZone,e.all_day AS allDay,e.created_at AS createdAt,e.updated_at AS updatedAt FROM calendar_events e LEFT JOIN notes n ON n.id=e.note_id WHERE e.start_at<=? AND e.end_at>=? ORDER BY e.start_at').all(endAt,startAt).map((r:any)=>({...r,allDay:!!r.allDay}));}
+  create(x:{noteId:string|null;title:string;description:string;startAt:number;endAt:number;timeZone:string;allDay:boolean}):string{if(x.endAt<x.startAt)throw new Error('O fim deve ser igual ou posterior ao início');const id=uuid(),n=Date.now();this.db.prepare('INSERT INTO calendar_events(id,note_id,title,description,start_at,end_at,time_zone,all_day,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?)').run(id,x.noteId,x.title,x.description,x.startAt,x.endAt,x.timeZone,x.allDay?1:0,n,n);return id;}
+  update(x:{id:string;noteId?:string|null;title?:string;description?:string;startAt?:number;endAt?:number;timeZone?:string;allDay?:boolean}):boolean{const e=this.db.prepare('SELECT start_at AS startAt,end_at AS endAt FROM calendar_events WHERE id=?').get(x.id) as {startAt:number;endAt:number}|undefined;if(!e)return false;const start=x.startAt??e.startAt,end=x.endAt??e.endAt;if(end<start)throw new Error('O fim deve ser igual ou posterior ao início');this.db.prepare('UPDATE calendar_events SET note_id=CASE WHEN ? THEN ? ELSE note_id END,title=COALESCE(?,title),description=COALESCE(?,description),start_at=?,end_at=?,time_zone=COALESCE(?,time_zone),all_day=COALESCE(?,all_day),updated_at=? WHERE id=?').run(x.noteId!==undefined?1:0,x.noteId??null,x.title??null,x.description??null,start,end,x.timeZone??null,x.allDay===undefined?null:x.allDay?1:0,Date.now(),x.id);return true;}
+  delete(id:string):boolean{return this.db.prepare('DELETE FROM calendar_events WHERE id=?').run(id).changes>0;}
+}
+
+export class NotebooksRepo {
+  constructor(private db: Database.Database) {}
+
+  list(): Notebook[] {
+    return this.db
+      .prepare(
+        `SELECT nb.id, nb.name, nb.created_at, nb.stack_id AS stackId,
+                (SELECT COUNT(*) FROM notes n WHERE n.notebook_id = nb.id AND n.deleted_at IS NULL) AS noteCount
+         FROM notebooks nb ORDER BY nb.name COLLATE NOCASE`
+      )
+      .all() as unknown as Notebook[];
+  }
+
+  moveToStack(notebookId: number, stackId: string | null): boolean {
+    if (stackId !== null && !this.db.prepare("SELECT 1 FROM notebook_stacks WHERE id=?").get(stackId)) return false;
+    return this.db.prepare("UPDATE notebooks SET stack_id=?, updated_at=? WHERE id=?").run(stackId, Date.now(), notebookId).changes > 0;
+  }
+
+  create(name: string): Notebook | null {
+    try {
+      const now = Date.now();
+      const result = this.db
+        .prepare("INSERT INTO notebooks (name, created_at, updated_at) VALUES (?, ?, ?)")
+        .run(name, now, now);
+      return { id: Number(result.lastInsertRowid), name, createdAt: now, noteCount: 0, stackId: null };
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE")) return null;
+      throw err;
+    }
+  }
+
+  rename(id: number, name: string): Notebook | null {
+    try {
+      this.db.prepare("UPDATE notebooks SET name = ?, updated_at = ? WHERE id = ?").run(name, Date.now(), id);
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE")) return null;
+      throw err;
+    }
+    const row = this.db.prepare("SELECT id, name, created_at, stack_id AS stackId FROM notebooks WHERE id = ?").get(id) as { id: number; name: string; created_at: number; stackId: string | null } | undefined;
+    if (!row) return null;
+    const noteCount = (this.db.prepare("SELECT COUNT(*) AS c FROM notes WHERE notebook_id = ? AND deleted_at IS NULL").get(id) as { c: number }).c;
+    return { id: row.id, name: row.name, createdAt: row.created_at, noteCount, stackId: row.stackId };
+  }
+
+  delete(id: number): boolean {
+    return this.db.prepare("DELETE FROM notebooks WHERE id = ?").run(id).changes > 0;
+  }
+}
+
+export class NotebookStacksRepo {
+  constructor(private db: Database.Database) {}
+  list(): NotebookStack[] {
+    return this.db.prepare(`SELECT s.id,s.name,s.sort_order AS sortOrder,s.created_at AS createdAt,s.updated_at AS updatedAt,
+      (SELECT COUNT(*) FROM notebooks n WHERE n.stack_id=s.id) AS notebookCount,
+      (SELECT COUNT(*) FROM notes x JOIN notebooks n ON n.id=x.notebook_id WHERE n.stack_id=s.id AND x.deleted_at IS NULL) AS noteCount
+      FROM notebook_stacks s ORDER BY s.sort_order,s.name COLLATE NOCASE`).all() as unknown as NotebookStack[];
+  }
+  create(name: string): NotebookStack | null {
+    const id = uuid(), now = Date.now();
+    try { this.db.prepare("INSERT INTO notebook_stacks(id,name,created_at,updated_at) VALUES(?,?,?,?)").run(id,name,now,now); }
+    catch (e) { if (e instanceof Error && e.message.includes("UNIQUE")) return null; throw e; }
+    return this.list().find(x => x.id === id) ?? null;
+  }
+  rename(id: string, name: string): NotebookStack | null {
+    try { const n=this.db.prepare("UPDATE notebook_stacks SET name=?,updated_at=? WHERE id=?").run(name,Date.now(),id); if (!n.changes) return null; }
+    catch(e) { if(e instanceof Error && e.message.includes("UNIQUE")) return null; throw e; }
+    return this.list().find(x=>x.id===id) ?? null;
+  }
+  delete(id: string): boolean { return this.db.prepare("DELETE FROM notebook_stacks WHERE id=?").run(id).changes > 0; }
+}
+
+export class TagsRepo {
+  constructor(private db: Database.Database) {}
+
+  list(): Tag[] {
+    return this.db
+      .prepare(
+        `SELECT t.id, t.name,
+                (SELECT COUNT(*) FROM note_tags nt JOIN notes n ON n.id = nt.note_id
+                 WHERE nt.tag_id = t.id AND n.deleted_at IS NULL) AS noteCount
+         FROM tags t ORDER BY t.name COLLATE NOCASE`
+      )
+      .all() as unknown as Tag[];
+  }
+
+  create(name: string): Tag | null {
+    try {
+      const result = this.db.prepare("INSERT INTO tags (name) VALUES (?)").run(name);
+      return { id: Number(result.lastInsertRowid), name, noteCount: 0 };
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE")) return null;
+      throw err;
+    }
+  }
+
+  attach(noteId: string, tagId: number): boolean {
+    try {
+      this.db.prepare("INSERT INTO note_tags (note_id, tag_id) VALUES (?, ?)").run(noteId, tagId);
+      return true;
+    } catch (err) {
+      if (err instanceof Error && err.message.includes("UNIQUE")) return false;
+      throw err;
+    }
+  }
+
+  detach(noteId: string, tagId: number): boolean {
+    return this.db.prepare("DELETE FROM note_tags WHERE note_id = ? AND tag_id = ?").run(noteId, tagId).changes > 0;
+  }
+}
+
+export class Meta {
+  constructor(private db: Database.Database) {}
+  get(key: string): string | null {
+    const row = this.db.prepare("SELECT value FROM meta WHERE key = ?").get(key) as { value: string } | undefined;
+    return row?.value ?? null;
+  }
+  set(key: string, value: string): void {
+    this.db
+      .prepare("INSERT INTO meta (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value")
+      .run(key, value);
+  }
+}
+
+export class CountsRepo {
+  constructor(private db: Database.Database) {}
+  get(): SidebarCounts {
+    const count = (sql: string, ...params: unknown[]) =>
+      (this.db.prepare(sql).get(...params) as { c: number }).c;
+    return {
+      all: count("SELECT COUNT(*) AS c FROM notes WHERE deleted_at IS NULL"),
+      favorites: count("SELECT COUNT(*) AS c FROM notes WHERE deleted_at IS NULL AND favorited = 1"),
+      trash: count("SELECT COUNT(*) AS c FROM notes WHERE deleted_at IS NOT NULL"),
+      unfiled: count("SELECT COUNT(*) AS c FROM notes WHERE deleted_at IS NULL AND notebook_id IS NULL"),
+    };
+  }
+}

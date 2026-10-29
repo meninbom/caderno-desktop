@@ -1,0 +1,5 @@
+import {describe,it,expect} from 'vitest';import {formatInZone,localDateTimeInZone,zonedAllDayRange,zonedLocalToEpoch} from '../shared/zoned-time';
+describe('event timezone conversion',()=>{
+ it('converts wall times and rejects nonexistent spring-forward times',()=>{const epoch=zonedLocalToEpoch('2026-03-08T03:30','America/New_York');expect(formatInZone(epoch,'America/New_York')).toContain('3:30');expect(localDateTimeInZone(epoch,'America/New_York')).toBe('2026-03-08T03:30');expect(()=>zonedLocalToEpoch('2026-03-08T02:30','America/New_York')).toThrow(/horário local não existe/)});
+ it('models all-day end inclusively across 23h and 25h DST dates',()=>{const spring=zonedAllDayRange('2026-03-08','2026-03-08','America/New_York');expect(spring.endAt-spring.startAt+1).toBe(23*3600000);const fall=zonedAllDayRange('2026-11-01','2026-11-01','America/New_York');expect(fall.endAt-fall.startAt+1).toBe(25*3600000);expect(localDateTimeInZone(spring.startAt,'America/New_York')).toBe('2026-03-08T00:00')});
+});

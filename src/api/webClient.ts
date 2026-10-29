@@ -1,0 +1,592 @@
+/**
+ * Adapter de desenvolvimento web. Persistência em localStorage APENAS para o
+ * preview de navegador (`npm run dev:web` / `npm run preview`). O aplicativo
+ * desktop usa SQLite via IPC — este arquivo nunca é usado no Electron.
+ */
+import type {
+  ListNotesQuery,
+  NoteFull,
+  NoteMeta,
+  Notebook,
+  NotebookStack,
+  NoteLinkTarget,
+  SidebarCounts,
+  SortOrder,
+  Tag,
+} from "../../shared/ipc";
+import type { AppMeta } from "../../shared/api";
+import {
+  extractVisibleText,
+  extractPreviewHtml,
+  markdownFromNote,
+  markdownHeadline,
+  markdownToNoteHtml,
+} from "../../shared/text";
+import type { AttachmentMeta, BackupRestoreResult, CadernoClient } from "./types";
+
+interface WebNote {
+  id: string;
+  notebookId: number | null;
+  title: string;
+  contentHtml: string;
+  contentText: string;
+  favorited: boolean;
+  pinned: boolean;
+  deletedAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+interface WebNotebook { id: number; name: string; createdAt: number; stackId?: string | null }
+interface WebTag { id: number; name: string }
+interface WebAttachment { id: number; noteId: string; fileName: string; byteSize: number; dataBase64: string; createdAt: number }
+
+interface WebStore {
+  seeded: boolean;
+  theme: "light" | "dark";
+  notes: WebNote[];
+  notebooks: WebNotebook[];
+  stacks?: { id: string; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
+  tags: WebTag[];
+  noteTags: { noteId: string; tagId: number }[];
+  attachments: WebAttachment[];
+}
+
+const KEY = "caderno.web.preview.v1";
+
+const ORDER: Record<SortOrder, (a: WebNote, b: WebNote) => number> = {
+  updated_desc: (a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || b.updatedAt - a.updatedAt,
+  updated_asc: (a, b) => a.updatedAt - b.updatedAt,
+  created_desc: (a, b) => b.createdAt - a.createdAt,
+  title_asc: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
+};
+
+function seedStore(): WebStore {
+  const now = Date.now();
+  const nb1: WebNotebook = { id: 1, name: "Pessoal", createdAt: now };
+  const nb2: WebNotebook = { id: 2, name: "Trabalho", createdAt: now };
+  const welcome: WebNote = {
+    id: crypto.randomUUID(), notebookId: 1, title: "Bem-vindo ao Caderno",
+    contentHtml:
+      "<h1>Bem-vindo</h1><p>Este é o seu primeiro passo. Crie cadernos, etiquete tudo e favorite o que mais importa.</p><ul><li>Crie <strong>cadernos</strong> na barra lateral</li><li>Use <strong>etiquetas</strong> para conectar assuntos entre cadernos</li><li>Tarefas rápidas viram <em>checklists</em></li></ul>",
+    contentText: "", favorited: true, pinned: false, deletedAt: null, createdAt: now, updatedAt: now,
+  };
+  welcome.contentText = extractVisibleText(welcome.contentHtml);
+  const market: WebNote = {
+    id: crypto.randomUUID(), notebookId: 1, title: "Lista do mercado",
+    contentHtml:
+      '<ul data-type="taskList"><li data-checked="false"><p>Café</p></li><li data-checked="true"><p>Leite</p></li><li data-checked="false"><p>Pão integral</p></li></ul><p>Orçamento: <strong>R$ 120</strong></p>',
+    contentText: "", favorited: false, pinned: false, deletedAt: null, createdAt: now, updatedAt: now,
+  };
+  market.contentText = extractVisibleText(market.contentHtml);
+  const meeting: WebNote = {
+    id: crypto.randomUUID(), notebookId: 2, title: "Roteiro da reunião",
+    contentHtml:
+      "<h2>Segunda-feira</h2><ul><li>Revisão das metas do trimestre</li><li>Onboarding de novos clientes</li></ul><blockquote>Ideias valem pouco sem execução.</blockquote>",
+    contentText: "", favorited: false, pinned: true, deletedAt: null, createdAt: now, updatedAt: now,
+  };
+  meeting.contentText = extractVisibleText(meeting.contentHtml);
+  return {
+    seeded: true,
+    theme: "light",
+    notes: [welcome, market, meeting],
+    notebooks: [nb1, nb2],
+    tags: [{ id: 1, name: "ideias" }],
+    noteTags: [{ noteId: meeting.id, tagId: 1 }],
+    attachments: [],
+  };
+}
+
+function download(name: string, content: string, mime: string): void {
+  const blob = new Blob([content], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+function pickFile(accept: string): Promise<File | null> {
+  return new Promise((resolve) => {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = accept;
+    input.onchange = () => resolve(input.files?.[0] ?? null);
+    // Se o usuário fechar sem escolher, resolve null após foco perdido.
+    input.addEventListener("cancel", () => resolve(null));
+    input.click();
+  });
+}
+
+export class WebClient implements CadernoClient {
+  async listTasks():Promise<import('../../shared/ipc').Task[]>{throw new Error('Tarefas locais disponíveis no app desktop.');} async createTask():Promise<string>{throw new Error('Tarefas locais disponíveis no app desktop.');} async updateTask():Promise<boolean>{throw new Error('Tarefas locais disponíveis no app desktop.');} async deleteTask():Promise<boolean>{throw new Error('Tarefas locais disponíveis no app desktop.');}
+  async listEvents():Promise<import('../../shared/ipc').CalendarEvent[]>{throw new Error('Calendário local disponível no app desktop.');} async createEvent():Promise<string>{throw new Error('Calendário local disponível no app desktop.');} async updateEvent():Promise<boolean>{throw new Error('Calendário local disponível no app desktop.');} async deleteEvent():Promise<boolean>{throw new Error('Calendário local disponível no app desktop.');}
+  private store: WebStore;
+
+  constructor() {
+    this.store = this.load();
+  }
+
+  private load(): WebStore {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as WebStore;
+        if (Array.isArray(parsed.notes)) return parsed;
+      }
+    } catch {
+      /* segue para seed */
+    }
+    const seeded = seedStore();
+    this.persist(seeded);
+    return seeded;
+  }
+
+  private persist(s: WebStore = this.store): void {
+    try {
+      localStorage.setItem(KEY, JSON.stringify(s));
+    } catch {
+      /* localStorage cheio/indisponível — o preview continua em memória */
+    }
+  }
+
+  private noteMeta(n: WebNote): NoteMeta {
+    const tags = this.store.noteTags
+      .filter(nt => nt.noteId === n.id)
+      .map(nt => this.store.tags.find(t => t.id === nt.tagId))
+      .filter((t): t is WebTag => Boolean(t))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map(t => ({ id: t.id, name: t.name }));
+    return {
+      id: n.id,
+      notebookId: n.notebookId,
+      title: n.title,
+      favorited: n.favorited,
+      pinned: n.pinned,
+      tags,
+      createdAt: n.createdAt,
+      updatedAt: n.updatedAt,
+      deletedAt: n.deletedAt,
+      preview: extractPreviewHtml(n.contentText),
+    };
+  }
+
+  private noteFull(n: WebNote): NoteFull {
+    return { ...this.noteMeta(n), contentHtml: n.contentHtml };
+  }
+
+  async listNotes(q: ListNotesQuery): Promise<NoteMeta[]> {
+    const term = (q.query ?? "").trim().toLowerCase();
+    let list = this.store.notes.filter((n) => {
+      if (q.view === "trash") {
+        if (n.deletedAt === null) return false;
+      } else if (n.deletedAt !== null) {
+        return false;
+      }
+      if (q.view === "favorites" && !n.favorited) return false;
+      if (q.view === "notebook" && n.notebookId !== q.notebookId) return false;
+      if (q.view === "unfiled" && n.notebookId !== null) return false;
+      if (q.view === "tag" && !this.store.noteTags.some(nt => nt.noteId === n.id && nt.tagId === q.tagId)) return false;
+      if (term && !(n.title.toLowerCase().includes(term) || n.contentText.toLowerCase().includes(term))) return false;
+      return true;
+    });
+    list = list.slice().sort(ORDER[q.order ?? "updated_desc"]);
+    return list.map(n => this.noteMeta(n));
+  }
+
+  async getNote(id: string): Promise<NoteFull | null> {
+    const n = this.store.notes.find(x => x.id === id);
+    return n ? this.noteFull(n) : null;
+  }
+  async findNotes(query: string, limit = 20): Promise<NoteLinkTarget[]> {
+    const q=query.trim().toLowerCase(); if(!q) return [];
+    return this.store.notes.filter(n=>n.deletedAt===null && `${n.title} ${n.contentText}`.toLowerCase().includes(q)).slice(0,limit).map(n=>({id:n.id,title:n.title||"Sem título",preview:extractPreviewHtml(n.contentText)}));
+  }
+
+  async createNote(input: { notebookId?: number | null; title?: string; contentHtml?: string }): Promise<NoteFull> {
+    const now = Date.now();
+    const n: WebNote = {
+      id: crypto.randomUUID(),
+      notebookId: input.notebookId ?? null,
+      title: input.title ?? "",
+      contentHtml: input.contentHtml ?? "",
+      contentText: extractVisibleText(input.contentHtml ?? ""),
+      favorited: false,
+      pinned: false,
+      deletedAt: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.store.notes.push(n);
+    this.persist();
+    return this.noteFull(n);
+  }
+
+  async updateNote(id: string, patch: { title?: string; contentHtml?: string }): Promise<NoteFull | null> {
+    const n = this.store.notes.find(x => x.id === id);
+    if (!n) return null;
+    if (patch.title !== undefined) n.title = patch.title;
+    if (patch.contentHtml !== undefined) {
+      n.contentHtml = patch.contentHtml;
+      n.contentText = extractVisibleText(patch.contentHtml);
+    }
+    n.updatedAt = Date.now();
+    this.persist();
+    return this.noteFull(n);
+  }
+
+  async moveNote(id: string, notebookId: number | null): Promise<NoteFull | null> {
+    const n = this.store.notes.find(x => x.id === id);
+    if (!n) return null;
+    n.notebookId = notebookId;
+    n.updatedAt = Date.now();
+    this.persist();
+    return this.noteFull(n);
+  }
+
+  private setFlag(id: string, field: "favorited" | "pinned", value: boolean): Promise<NoteFull | null> {
+    const n = this.store.notes.find(x => x.id === id);
+    if (!n) return Promise.resolve(null);
+    n[field] = value;
+    this.persist();
+    return Promise.resolve(this.noteFull(n));
+  }
+  setFavorite(id: string, value: boolean): Promise<NoteFull | null> { return this.setFlag(id, "favorited", value); }
+  setPinned(id: string, value: boolean): Promise<NoteFull | null> { return this.setFlag(id, "pinned", value); }
+
+  async deleteNote(id: string): Promise<NoteFull | null> {
+    const n = this.store.notes.find(x => x.id === id);
+    if (!n || n.deletedAt !== null) return n ? this.noteFull(n) : null;
+    n.deletedAt = Date.now();
+    this.persist();
+    return this.noteFull(n);
+  }
+
+  async restoreNote(id: string): Promise<NoteFull | null> {
+    const n = this.store.notes.find(x => x.id === id);
+    if (!n) return null;
+    n.deletedAt = null;
+    this.persist();
+    return this.noteFull(n);
+  }
+
+  async purgeNote(id: string): Promise<boolean> {
+    const before = this.store.notes.length;
+    this.store.notes = this.store.notes.filter(x => x.id !== id);
+    this.store.noteTags = this.store.noteTags.filter(x => x.noteId !== id);
+    this.store.attachments = this.store.attachments.filter(x => x.noteId !== id);
+    this.persist();
+    return this.store.notes.length < before;
+  }
+
+  async emptyTrash(): Promise<number> {
+    const trash = this.store.notes.filter(n => n.deletedAt !== null);
+    const ids = new Set(trash.map(n => n.id));
+    this.store.notes = this.store.notes.filter(n => n.deletedAt === null);
+    this.store.noteTags = this.store.noteTags.filter(x => !ids.has(x.noteId));
+    this.store.attachments = this.store.attachments.filter(x => !ids.has(x.noteId));
+    this.persist();
+    return trash.length;
+  }
+
+  async listNotebooks(): Promise<Notebook[]> {
+    return this.store.notebooks
+      .map(nb => ({
+        id: nb.id,
+        name: nb.name,
+        createdAt: nb.createdAt,
+        noteCount: this.store.notes.filter(n => n.notebookId === nb.id && n.deletedAt === null).length,
+        stackId: nb.stackId ?? null,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private nextNotebookId(): number {
+    return this.store.notebooks.reduce((m, n) => Math.max(m, n.id), 0) + 1;
+  }
+
+  async createNotebook(name: string): Promise<Notebook | null> {
+    if (this.store.notebooks.some(nb => nb.name.toLowerCase() === name.toLowerCase())) return null;
+    const nb: WebNotebook = { id: this.nextNotebookId(), name, createdAt: Date.now() };
+    this.store.notebooks.push(nb);
+    this.persist();
+    return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount: 0, stackId: null };
+  }
+
+  async renameNotebook(id: number, name: string): Promise<Notebook | null> {
+    const nb = this.store.notebooks.find(x => x.id === id);
+    if (!nb) return null;
+    if (this.store.notebooks.some(x => x.id !== id && x.name.toLowerCase() === name.toLowerCase())) return null;
+    nb.name = name;
+    this.persist();
+    const noteCount = this.store.notes.filter(n => n.notebookId === id && n.deletedAt === null).length;
+      return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount, stackId: nb.stackId ?? null };
+  }
+  async moveNotebookToStack(notebookId: number, stackId: string | null): Promise<boolean> { const nb=this.store.notebooks.find(x=>x.id===notebookId); if(!nb) return false; nb.stackId=stackId; this.persist(); return true; }
+  async listStacks(): Promise<NotebookStack[]> { return (this.store.stacks??[]).map(s=>({ ...s, notebookCount:this.store.notebooks.filter(n=>n.stackId===s.id).length, noteCount:this.store.notes.filter(n=>n.deletedAt===null&&this.store.notebooks.some(b=>b.id===n.notebookId&&b.stackId===s.id)).length })); }
+  async createStack(name:string):Promise<NotebookStack|null>{if((this.store.stacks??[]).some(s=>s.name.toLowerCase()===name.toLowerCase()))return null;const now=Date.now();const id=crypto.randomUUID();(this.store.stacks??=[]).push({id,name,sortOrder:0,createdAt:now,updatedAt:now});this.persist();return (await this.listStacks()).find(s=>s.id===id)??null;}
+  async renameStack(id:string,name:string):Promise<NotebookStack|null>{const s=(this.store.stacks??[]).find(x=>x.id===id);if(!s||(this.store.stacks??[]).some(x=>x.id!==id&&x.name.toLowerCase()===name.toLowerCase()))return null;s.name=name;s.updatedAt=Date.now();this.persist();return (await this.listStacks()).find(x=>x.id===id)??null;}
+  async deleteStack(id:string):Promise<boolean>{const before=(this.store.stacks??[]).length;this.store.stacks=(this.store.stacks??[]).filter(x=>x.id!==id);this.store.notebooks.forEach(n=>{if(n.stackId===id)n.stackId=null});this.persist();return this.store.stacks.length<before;}
+
+  async deleteNotebook(id: number): Promise<boolean> {
+    const before = this.store.notebooks.length;
+    this.store.notebooks = this.store.notebooks.filter(x => x.id !== id);
+    for (const n of this.store.notes) if (n.notebookId === id) n.notebookId = null;
+    this.persist();
+    return this.store.notebooks.length < before;
+  }
+
+  async listTags(): Promise<Tag[]> {
+    return this.store.tags
+      .map(t => ({
+        id: t.id,
+        name: t.name,
+        noteCount: this.store.noteTags.filter(nt => nt.tagId === t.id && this.store.notes.find(n => n.id === nt.noteId && n.deletedAt === null)).length,
+      }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  private nextTagId(): number {
+    return this.store.tags.reduce((m, t) => Math.max(m, t.id), 0) + 1;
+  }
+
+  async createTag(name: string): Promise<Tag | null> {
+    if (this.store.tags.some(t => t.name.toLowerCase() === name.toLowerCase())) return null;
+    const t: WebTag = { id: this.nextTagId(), name };
+    this.store.tags.push(t);
+    this.persist();
+    return { id: t.id, name: t.name, noteCount: 0 };
+  }
+
+  async attachTag(noteId: string, tagId: number): Promise<boolean> {
+    if (this.store.noteTags.some(nt => nt.noteId === noteId && nt.tagId === tagId)) return false;
+    this.store.noteTags.push({ noteId, tagId });
+    this.persist();
+    return true;
+  }
+
+  async detachTag(noteId: string, tagId: number): Promise<boolean> {
+    const before = this.store.noteTags.length;
+    this.store.noteTags = this.store.noteTags.filter(nt => !(nt.noteId === noteId && nt.tagId === tagId));
+    this.persist();
+    return this.store.noteTags.length < before;
+  }
+
+  async counts(): Promise<SidebarCounts> {
+    const active = this.store.notes.filter(n => n.deletedAt === null);
+    return {
+      all: active.length,
+      favorites: active.filter(n => n.favorited).length,
+      trash: this.store.notes.filter(n => n.deletedAt !== null).length,
+      unfiled: active.filter(n => n.notebookId === null).length,
+    };
+  }
+
+  async theme(): Promise<string | null> {
+    return this.store.theme;
+  }
+  async setTheme(value: "light" | "dark"): Promise<boolean> {
+    this.store.theme = value;
+    this.persist();
+    return true;
+  }
+
+  async listAttachments(noteId: string): Promise<AttachmentMeta[]> {
+    return this.store.attachments
+      .filter(a => a.noteId === noteId)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map(a => ({ id: a.id, fileName: a.fileName, byteSize: a.byteSize }));
+  }
+  async listAttachmentJobs():Promise<import("../../shared/ipc").AttachmentJob[]>{return [];}
+  async retryAttachmentJob(_id:number):Promise<boolean>{return false;}
+  async cancelAttachmentJob(_id:number):Promise<boolean>{return false;}
+  async reindexAttachments():Promise<number>{return 0;}
+
+  private nextAttachmentId(): number {
+    return this.store.attachments.reduce((m, a) => Math.max(m, a.id), 0) + 1;
+  }
+
+  async saveAttachment(noteId: string, name: string, dataBase64: string): Promise<{ id: number }> {
+    const safe = name.replace(/[^a-zA-Z0-9. _\-()[\]{}]/g, "_").slice(0, 160) || "anexo";
+    const padding = dataBase64.endsWith("==") ? 2 : dataBase64.endsWith("=") ? 1 : 0;
+    const byteSize = Math.floor((dataBase64.length * 3) / 4) - padding;
+    const a: WebAttachment = { id: this.nextAttachmentId(), noteId, fileName: safe, byteSize, dataBase64, createdAt: Date.now() };
+    this.store.attachments.push(a);
+    this.persist();
+    return { id: a.id };
+  }
+
+  async saveImage(_noteId:string,_name:string,_dataBase64:string):Promise<{id:number;mime:string;sha256:string;storedName:string}>{throw new Error("Imagens inline requerem o app desktop.");}
+
+  async deleteAttachment(noteId: string, attachmentId: number): Promise<boolean> {
+    const before = this.store.attachments.length;
+    this.store.attachments = this.store.attachments.filter(a => !(a.noteId === noteId && a.id === attachmentId));
+    this.persist();
+    return this.store.attachments.length < before;
+  }
+
+  async openAttachment(noteId: string, attachmentId: number): Promise<{ filePath: string; fileName: string } | null> {
+    const a = this.store.attachments.find(x => x.noteId === noteId && x.id === attachmentId);
+    if (!a) return null;
+    const mime = "application/octet-stream";
+    download(a.fileName, atob(a.dataBase64), mime);
+    return { filePath: "", fileName: a.fileName };
+  }
+
+  async exportMarkdown(noteId: string): Promise<{ canceled?: boolean; filePath?: string } | null> {
+    const n = this.store.notes.find(x => x.id === noteId);
+    if (!n) return null;
+    const tags = this.store.noteTags
+      .filter(nt => nt.noteId === n.id)
+      .map(nt => this.store.tags.find(t => t.id === nt.tagId))
+      .filter((t): t is WebTag => Boolean(t));
+    const nb = this.store.notebooks.find(x => x.id === n.notebookId);
+    const md = markdownFromNote({
+      title: n.title,
+      contentHtml: n.contentHtml,
+      contentText: n.contentText,
+      tags: tags.map(t => ({ name: t.name })),
+      notebookName: nb?.name ?? null,
+      createdAt: n.createdAt,
+      updatedAt: n.updatedAt,
+    });
+    const filePath = `${(n.title || "sem-titulo").slice(0, 80).replace(/[\\/:*?"<>|]/g, "_")}.md`;
+    download(filePath, md, "text/markdown");
+    return { canceled: false, filePath };
+  }
+
+  async importMarkdown(items: { fileName: string; content: string }[], notebookId: number | null): Promise<{ created: number }> {
+    let created = 0;
+    for (const item of items) {
+      const html = markdownToNoteHtml(item.content);
+      const title = markdownHeadline(item.content) ?? item.fileName.replace(/\.[^.]+$/, "");
+      await this.createNote({ notebookId, title, contentHtml: html });
+      created += 1;
+    }
+    return { created };
+  }
+  async importEml(_notebookId:number|null):Promise<{canceled?:boolean;created:number;duplicates:number;attachments:number;errors:string[]}>{throw new Error("A importação .eml requer o aplicativo desktop.");}
+
+  async saveBackup(): Promise<{ canceled?: boolean; filePath?: string } | null> {
+    const payload = {
+      app: "caderno",
+      schemaVersion: 1,
+      exportedAt: Date.now(),
+      notebooks: this.store.notebooks.map(nb => ({ id: nb.id, name: nb.name })),
+      notes: this.store.notes.map(n => ({
+        id: n.id,
+        notebookId: n.notebookId,
+        title: n.title,
+        contentHtml: n.contentHtml,
+        favorited: n.favorited,
+        pinned: n.pinned,
+        deletedAt: n.deletedAt,
+        createdAt: n.createdAt,
+        updatedAt: n.updatedAt,
+        tags: this.store.noteTags
+          .filter(nt => nt.noteId === n.id)
+          .map(nt => this.store.tags.find(t => t.id === nt.tagId)?.name)
+          .filter((x): x is string => Boolean(x)),
+      })),
+    };
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const filePath = `caderno-backup-${stamp}.json`;
+    download(filePath, JSON.stringify(payload, null, 2), "application/json");
+    return { canceled: false, filePath };
+  }
+
+  async restoreBackup(): Promise<{ canceled?: boolean } | BackupRestoreResult> {
+    const file = await pickFile(".json,application/json");
+    if (!file) return { canceled: true };
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(await file.text());
+    } catch {
+      return { ok: false, error: "JSON inválido" };
+    }
+    const p = parsed as {
+      app?: unknown; schemaVersion?: unknown; notes?: unknown; notebooks?: unknown;
+    };
+    if (p.app !== "caderno" || !Array.isArray(p.notes) || !Array.isArray(p.notebooks)) {
+      return { ok: false, error: "Backup inválido: estrutura inesperada" };
+    }
+    // Aplica de forma atômica em memória: monta novo store e só persiste se válido.
+    const notes = (p.notes as Array<{
+      id?: unknown; notebookId?: unknown; title?: unknown; contentHtml?: unknown;
+      favorited?: unknown; pinned?: unknown; deletedAt?: unknown; createdAt?: unknown; updatedAt?: unknown; tags?: unknown;
+    }>);
+    const notebooks = (p.notebooks as Array<{ id?: unknown; name?: unknown }>);
+    for (const n of notes) {
+      if (typeof n.id !== "string" || typeof n.title !== "string" || typeof n.contentHtml !== "string") {
+        return { ok: false, error: "Backup inválido: nota malformada" };
+      }
+    }
+    const next: WebStore = {
+      seeded: true,
+      theme: this.store.theme,
+      notes: [],
+      notebooks: [],
+      tags: [],
+      noteTags: [],
+      attachments: [],
+    };
+    const nbMap = new Map<number, number>();
+    let nbSeq = 0;
+    for (const nb of notebooks) {
+      if (typeof nb.name !== "string") return { ok: false, error: "Backup inválido: caderno malformado" };
+      nbSeq += 1;
+      const id = nbSeq;
+      nbMap.set(typeof nb.id === "number" ? nb.id : -1, id);
+      next.notebooks.push({ id, name: nb.name, createdAt: Date.now() });
+    }
+    const tagMap = new Map<string, number>();
+    let tagSeq = 0;
+    const tagId = (name: string): number => {
+      const existing = tagMap.get(name.toLowerCase());
+      if (existing) return existing;
+      tagSeq += 1;
+      tagMap.set(name.toLowerCase(), tagSeq);
+      next.tags.push({ id: tagSeq, name });
+      return tagSeq;
+    };
+    for (const n of notes) {
+      const notebookId = typeof n.notebookId === "number" ? (nbMap.get(n.notebookId) ?? null) : null;
+      const note: WebNote = {
+        id: n.id as string,
+        notebookId,
+        title: n.title as string,
+        contentHtml: n.contentHtml as string,
+        contentText: extractVisibleText(n.contentHtml as string),
+        favorited: n.favorited === true,
+        pinned: n.pinned === true,
+        deletedAt: typeof n.deletedAt === "number" ? n.deletedAt : null,
+        createdAt: typeof n.createdAt === "number" ? n.createdAt : Date.now(),
+        updatedAt: typeof n.updatedAt === "number" ? n.updatedAt : Date.now(),
+      };
+      next.notes.push(note);
+      if (Array.isArray(n.tags)) {
+        for (const t of n.tags) {
+          if (typeof t === "string") next.noteTags.push({ noteId: note.id, tagId: tagId(t) });
+        }
+      }
+    }
+    this.store = next;
+    this.persist();
+    return { ok: true, notes: next.notes.length, notebooks: next.notebooks.length };
+  }
+
+  async meta(): Promise<AppMeta> {
+    return { name: "caderno", version: "0.2.0", userDataPath: "(navegador/localStorage)", platform: "web" };
+  }
+  async clipperStatus(){return {enabled:false,paired:false,port:null};}
+  async transcriptionConfig(){return {runtimeConfigured:false,modelConfigured:false,ffmpegConfigured:false,runtime:"",ffmpeg:""};} async configureTranscription(_x:{runtime:string;ffmpeg:string}):Promise<{runtimeConfigured:boolean;modelConfigured:boolean;ffmpegConfigured:boolean;runtime:string;ffmpeg:string}>{throw new Error("Transcrição local exige o app desktop.");} async listTranscriptionJobs(_noteId:string){return [];} async listTranscripts(_noteId:string){return [];} async startTranscription(_noteId:string,_attachmentId:number,_language:"pt"|"auto"):Promise<string>{throw new Error("Transcrição local exige o app desktop.");} async cancelTranscription(_id:string){return false;}
+  async enableClipper():Promise<{port:number}>{throw new Error("O Web Clipper exige o app desktop.");}
+  async pairClipper():Promise<{code:string;nonce:string;expiresAt:number}>{throw new Error("O Web Clipper exige o app desktop.");}
+  async revokeClipper(){return true;}
+}
+
+export function hasDesktopBridge(): boolean {
+  return typeof window !== "undefined" && Boolean((window as unknown as { cadernoDesktop?: unknown }).cadernoDesktop);
+}
