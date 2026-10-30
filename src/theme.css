@@ -595,6 +595,7 @@ input:focus { border-color: var(--accent); outline: none; }
 .note-row .row-meta .meta-tag::before { content:none; }
 .note-row .row-meta .meta-tag-overflow { flex:0 0 auto; max-width:none; }
 .note-row.selected .row-meta .meta-tag { border-color:color-mix(in srgb, var(--accent) 30%, transparent); background:color-mix(in srgb, var(--accent) 12%, var(--surface)); }
+.note-row .row-meta .meta-tag[style*="--tag-color"] { border-color: color-mix(in srgb, var(--tag-color) 40%, transparent); background: color-mix(in srgb, var(--tag-color) 16%, var(--surface)); color: var(--tag-color); font-weight: 500; }
 .note-row .row-meta .fav {
   margin-left: auto;
   color: var(--star);
