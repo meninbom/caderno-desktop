@@ -156,8 +156,8 @@ describe("aplicação sobre a seleção capturada", () => {
     const colored = apply(stateAt(doc, 1, 17), "text", "#d64000");
     const reset = apply(stateAt(colored.doc, 1, 17), "text", null);
     const [alpha, beta, gamma] = texts(reset.doc);
-    expect(alpha.marks.textStyle).toEqual({ color: null, fontFamily: FONT });
-    expect(beta.marks.textStyle).toEqual({ color: null, fontFamily: "Arial, sans-serif" });
+    expect(alpha.marks.textStyle).toEqual({ color: null, fontFamily: FONT, fontSize: null });
+    expect(beta.marks.textStyle).toEqual({ color: null, fontFamily: "Arial, sans-serif", fontSize: null });
     expect(gamma.marks.textStyle).toBeUndefined();
     expect(beta.marks.bold).toBeDefined();
   });
@@ -267,6 +267,17 @@ describe("marcação HTML gerada (base da exportação)", () => {
     expect(markTag).toBe("mark");
     expect(markAttrs["data-color"]).toBe("#1e3a8a");
     expect(markAttrs.style).toBe("background-color: #1e3a8a; color: #ffffff");
+  });
+
+  it("font-size é renderizado, lido do HTML e preservado pelo sanitizador", () => {
+    const [tag, attrs] = dom("textStyle", { fontSize: "24px" });
+    expect(tag).toBe("span");
+    expect(attrs.style).toContain("font-size: 24px");
+    const element = { style: { fontSize: "24px" } } as HTMLElement;
+    const fontSize = NoteTextStyle.config.addAttributes?.call({ parent: () => ({}) } as never)?.fontSize;
+    expect(fontSize?.parseHTML?.(element)).toBe("24px");
+    expect(sanitizeNoteHtml('<p><span style="font-size: 24px">grande</span></p>')).toContain("font-size:24px");
+    expect(sanitizeNoteHtml('<p><span style="font-size: 999px">fora</span></p>')).not.toContain("font-size");
   });
 
   it("o sanitizador da exportação mantém cor, fonte, fundo e data-color (hex e rgb() relido do navegador)", () => {

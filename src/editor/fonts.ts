@@ -43,9 +43,28 @@ export const NoteTextStyle = TextStyle.extend({
           ? { style: `font-family: ${attributes.fontFamily}` }
           : {},
       },
+      fontSize: {
+        default: null,
+        parseHTML: element => { const value = element.style.fontSize; return /^\d+(?:\.\d+)?px$/.test(value) ? value : null; },
+        renderHTML: attributes => attributes.fontSize ? { style: `font-size: ${attributes.fontSize}` } : {},
+      },
     };
   },
 });
+
+export function selectionFontSize(editor: Editor): string {
+  const { selection, storedMarks } = editor.state;
+  if (selection.empty) return (storedMarks ?? selection.$from.marks()).find(mark => mark.type.name === "textStyle")?.attrs.fontSize ?? "";
+  let size: string | undefined;
+  editor.state.doc.nodesBetween(selection.from, selection.to, node => {
+    if (size === MIXED_FONT) return false;
+    if (!node.isText) return;
+    const value = node.marks.find(mark => mark.type.name === "textStyle")?.attrs.fontSize ?? "";
+    if (size === undefined) size = value;
+    else if (size !== value) size = MIXED_FONT;
+  });
+  return size ?? "";
+}
 
 export const MIXED_FONT = "__mixed__";
 

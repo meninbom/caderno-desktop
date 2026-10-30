@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import Placeholder from "@tiptap/extension-placeholder";
-import { FONT_GROUPS, MIXED_FONT, selectionFontFamily } from "../editor/fonts";
+import { FONT_GROUPS, MIXED_FONT, selectionFontFamily, selectionFontSize } from "../editor/fonts";
 import { buildNoteExtensions } from "../editor/extensions";
 import fixWebmDuration from "fix-webm-duration";
 import { MediaPreview, type PreviewAttachment } from "./MediaPreview";
@@ -313,6 +313,11 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
           <ToolBtn title="Desfazer" onClick={() => chain().undo().run()}><Undo2 size={14} /></ToolBtn>
           <ToolBtn title="Refazer" onClick={() => chain().redo().run()}><Redo2 size={14} /></ToolBtn>
           <span className="sep" />
+          <select className="toolbar-font-size" aria-label="Tamanho da fonte" title="Tamanho da fonte da seleção" value={selectionFontSize(editor)} onChange={event => chain().setMark("textStyle", { fontSize: event.target.value || null }).removeEmptyTextStyle().run()}>
+            <option value="">Padrão</option>
+            {selectionFontSize(editor) === MIXED_FONT && <option value={MIXED_FONT} disabled>Vários tamanhos</option>}
+            {[10, 12, 14, 16, 18, 20, 24, 28, 32, 36].map(size => <option key={size} value={`${size}px`}>{size}</option>)}
+          </select>
           <select
             className="toolbar-font"
             aria-label="Fonte do texto"

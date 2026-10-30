@@ -1,6 +1,6 @@
 # Caderno
 
-Versão **0.13.0**. Etiquetas coloridas, zoom e tamanho de fonte nas notas, links externos clicáveis, nova tela de Tarefas. Pastas de notas dentro dos cadernos com arrastar e soltar, modelos de notas, consulta lado a lado, exportação PDF/HTML e seletores de cor do texto e marca-texto. Busca geral e comandos com **Ctrl+K**, referências entre notas, marcações de PDF e tarefas recorrentes com prioridade. Os relatórios históricos descrevem versões anteriores; modelos de voz, dados pessoais, instaladores e evidências locais não fazem parte do repositório.
+Versão **0.13.1**. Tamanho de fonte por trecho nas notas, badges de etiquetas na lista. Etiquetas coloridas, zoom e tamanho de fonte nas notas, links externos clicáveis, nova tela de Tarefas. Pastas de notas dentro dos cadernos com arrastar e soltar, modelos de notas, consulta lado a lado, exportação PDF/HTML e seletores de cor do texto e marca-texto. Busca geral e comandos com **Ctrl+K**, referências entre notas, marcações de PDF e tarefas recorrentes com prioridade. Os relatórios históricos descrevem versões anteriores; modelos de voz, dados pessoais, instaladores e evidências locais não fazem parte do repositório.
 
 Aplicativo **desktop** de anotações para Windows, inspirado nos fluxos de
 organização do Evernote e com visual limpo e minimalista (próximo ao T3 Code).

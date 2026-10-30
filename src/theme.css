@@ -591,8 +591,10 @@ input:focus { border-color: var(--accent); outline: none; }
   min-width: 0;
   overflow: hidden;
 }
-.note-row .row-meta .meta-tag { color: var(--text-muted); }
-.note-row .row-meta .meta-tag::before { content: "#"; color: var(--text-faint); }
+.note-row .row-meta .meta-tag { display:inline-block; max-width:92px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; padding:1px 6px; border:1px solid var(--border); border-radius:999px; background:var(--surface-2); color:var(--text-muted); font-size:10px; line-height:1.4; }
+.note-row .row-meta .meta-tag::before { content:none; }
+.note-row .row-meta .meta-tag-overflow { flex:0 0 auto; max-width:none; }
+.note-row.selected .row-meta .meta-tag { border-color:color-mix(in srgb, var(--accent) 30%, transparent); background:color-mix(in srgb, var(--accent) 12%, var(--surface)); }
 .note-row .row-meta .fav {
   margin-left: auto;
   color: var(--star);
@@ -662,6 +664,10 @@ input:focus { border-color: var(--accent); outline: none; }
 .editor-toolbar button:hover { background: var(--surface-2); color: var(--text); }
 .editor-toolbar button.on { color: var(--accent); background: var(--accent-soft); }
 .editor-toolbar .toolbar-font { flex: 0 1 142px; width: 142px; min-width: 110px; height: 30px; padding: 0 7px; border: 1px solid transparent; border-radius: 6px; background: transparent; color: var(--text); font-size: 12px; cursor: pointer; }
+.editor-toolbar .toolbar-font-size { flex:0 0 76px; width:76px; height:30px; padding:0 5px; border:1px solid transparent; border-radius:6px; background:transparent; color:var(--text); font-size:12px; cursor:pointer; }
+.editor-toolbar .toolbar-font-size:hover { background:var(--surface-2); }
+.editor-toolbar .toolbar-font-size:focus-visible { outline:2px solid var(--accent); outline-offset:1px; }
+.editor-toolbar .toolbar-font-size option { background:var(--surface); color:var(--text); }
 .editor-toolbar .toolbar-font:hover { background: var(--surface-2); }
 .editor-toolbar .toolbar-font:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .editor-toolbar .toolbar-font:disabled { opacity: .5; cursor: default; }

@@ -81,6 +81,7 @@ const STYLE_RULES: sanitizeHtml.IOptions["allowedStyles"] = {
     color: COLOR,
     "background-color": COLOR,
     "font-family": [/^[\w\s"',.-]{1,200}$/],
+    "font-size": [/^(?:[6-9]|[1-9]\d|1\d\d)(?:\.\d+)?px$/],
     "text-align": [/^(left|right|center|justify)$/],
     "min-width": [/^\d{1,5}(\.\d+)?px$/],
     width: [/^\d{1,5}(\.\d+)?(px|%)$/],

@@ -203,8 +203,7 @@ export function SettingsPage({ appearance, update, reset, jobs, refreshJobs, onS
         {section === "editor" && <>
           <h2>Editor</h2>
           <Segmented label="Fonte do texto" value={appearance.editorFont} options={[{ value: "sans", label: "Sem serifa" }, { value: "serif", label: "Serifada" }, { value: "mono", label: "Monoespaçada" }]} onChange={(editorFont) => update({ editorFont })} />
-          <Slider label="Tamanho base do texto" value={appearance.editorSize} min={12} max={24} step={1} unit="px" onChange={(v) => update({ editorSize: v })} />
-          <Slider label="Tamanho da interface" hint="Afeta rótulos e controles do aplicativo." value={appearance.uiSize} min={12} max={16} step={1} unit="px" onChange={(v) => update({ uiSize: v })} />
+          <Slider label="Tamanho da fonte do sistema" hint="Afeta rótulos e controles do aplicativo, não o conteúdo das notas." value={appearance.uiSize} min={12} max={16} step={1} unit="px" onChange={(v) => update({ uiSize: v })} />
           <Slider label="Altura da linha" value={appearance.lineHeight} min={1.3} max={2.2} step={0.05} unit="" onChange={(v) => update({ lineHeight: v })} />
           <Slider label="Espaço entre parágrafos" value={appearance.paragraphGap} min={0} max={1.5} step={0.05} unit="em" onChange={(v) => update({ paragraphGap: v })} />
           <Toggle label="Usar toda a largura disponível" hint="Expande a escrita até as margens laterais." checked={appearance.fullWidth} onChange={(fullWidth) => update({ fullWidth })} />

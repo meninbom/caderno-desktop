@@ -262,6 +262,7 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
                       {n.tags.slice(0, 3).map((t) => (
                         <span key={`chip-${n.id}-${t.id}`} className="meta-tag" style={t.color ? { "--tag-color": t.color } as React.CSSProperties : undefined}>{t.name}</span>
                       ))}
+                      {n.tags.length > 3 && <span className="meta-tag meta-tag-overflow" title={n.tags.slice(3).map(tag => tag.name).join(", ")}>+{n.tags.length - 3}</span>}
                     </span>
                   )}
                   {n.favorited && (
