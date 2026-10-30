@@ -2,7 +2,7 @@ import { nextOccurrence } from '../../shared/recurrence';
 import { localDateTimeInZone } from '../../shared/zoned-time';
 import type { ChannelInputs, Task } from '../../shared/ipc';
 import Database from "better-sqlite3";
-import { NoteFull, NoteMeta, ListNotesQuery, Notebook, Tag, SidebarCounts, SortOrder, NotebookStack, NoteFolder, NoteLinkTarget, AttachmentJob } from "../../shared/ipc";
+import { NoteFull, NoteMeta, ListNotesQuery, Notebook, Tag, SidebarCounts, SortOrder, NoteFolder, NoteLinkTarget, AttachmentJob } from "../../shared/ipc";
 import { extractPreviewHtml, extractVisibleText } from "./db";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -39,19 +39,19 @@ const ORDER: Record<SortOrder, string> = {
 
 const META_COLS = `n.id, n.notebook_id, n.folder_id, n.title, n.favorited, n.pinned, n.deleted_at, n.created_at, n.updated_at, n.content_text`;
 
-function tagsForNotes(db: Database.Database, ids: string[]): Map<string, { id: number; name: string }[]> {
-  const out = new Map<string, { id: number; name: string }[]>();
+function tagsForNotes(db: Database.Database, ids: string[]): Map<string, { id: number; name: string; color: string | null }[]> {
+  const out = new Map<string, { id: number; name: string; color: string | null }[]>();
   if (ids.length === 0) return out;
   const placeholders = ids.map(() => "?").join(",");
   const rows = db
     .prepare(
-      `SELECT nt.note_id, t.id, t.name FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
+      `SELECT nt.note_id, t.id, t.name, t.color FROM note_tags nt JOIN tags t ON t.id = nt.tag_id
        WHERE nt.note_id IN (${placeholders}) ORDER BY t.name COLLATE NOCASE`
     )
-    .all(...ids) as { note_id: string; id: number; name: string }[];
+    .all(...ids) as { note_id: string; id: number; name: string; color: string | null }[];
   for (const r of rows) {
     const list = out.get(r.note_id) ?? [];
-    list.push({ id: r.id, name: r.name });
+    list.push({ id: r.id, name: r.name, color: r.color });
     out.set(r.note_id, list);
   }
   return out;
@@ -388,16 +388,11 @@ export class NotebooksRepo {
   list(): Notebook[] {
     return this.db
       .prepare(
-        `SELECT nb.id, nb.name, nb.created_at, nb.stack_id AS stackId,
+        `SELECT nb.id, nb.name, nb.created_at,
                 (SELECT COUNT(*) FROM notes n WHERE n.notebook_id = nb.id AND n.deleted_at IS NULL) AS noteCount
          FROM notebooks nb ORDER BY nb.name COLLATE NOCASE`
       )
       .all() as unknown as Notebook[];
-  }
-
-  moveToStack(notebookId: number, stackId: string | null): boolean {
-    if (stackId !== null && !this.db.prepare("SELECT 1 FROM notebook_stacks WHERE id=?").get(stackId)) return false;
-    return this.db.prepare("UPDATE notebooks SET stack_id=?, updated_at=? WHERE id=?").run(stackId, Date.now(), notebookId).changes > 0;
   }
 
   create(name: string): Notebook | null {
@@ -406,7 +401,7 @@ export class NotebooksRepo {
       const result = this.db
         .prepare("INSERT INTO notebooks (name, created_at, updated_at) VALUES (?, ?, ?)")
         .run(name, now, now);
-      return { id: Number(result.lastInsertRowid), name, createdAt: now, noteCount: 0, stackId: null };
+      return { id: Number(result.lastInsertRowid), name, createdAt: now, noteCount: 0 };
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE")) return null;
       throw err;
@@ -420,37 +415,15 @@ export class NotebooksRepo {
       if (err instanceof Error && err.message.includes("UNIQUE")) return null;
       throw err;
     }
-    const row = this.db.prepare("SELECT id, name, created_at, stack_id AS stackId FROM notebooks WHERE id = ?").get(id) as { id: number; name: string; created_at: number; stackId: string | null } | undefined;
+    const row = this.db.prepare("SELECT id, name, created_at FROM notebooks WHERE id = ?").get(id) as { id: number; name: string; created_at: number } | undefined;
     if (!row) return null;
     const noteCount = (this.db.prepare("SELECT COUNT(*) AS c FROM notes WHERE notebook_id = ? AND deleted_at IS NULL").get(id) as { c: number }).c;
-    return { id: row.id, name: row.name, createdAt: row.created_at, noteCount, stackId: row.stackId };
+    return { id: row.id, name: row.name, createdAt: row.created_at, noteCount };
   }
 
   delete(id: number): boolean {
     return this.db.prepare("DELETE FROM notebooks WHERE id = ?").run(id).changes > 0;
   }
-}
-
-export class NotebookStacksRepo {
-  constructor(private db: Database.Database) {}
-  list(): NotebookStack[] {
-    return this.db.prepare(`SELECT s.id,s.name,s.sort_order AS sortOrder,s.created_at AS createdAt,s.updated_at AS updatedAt,
-      (SELECT COUNT(*) FROM notebooks n WHERE n.stack_id=s.id) AS notebookCount,
-      (SELECT COUNT(*) FROM notes x JOIN notebooks n ON n.id=x.notebook_id WHERE n.stack_id=s.id AND x.deleted_at IS NULL) AS noteCount
-      FROM notebook_stacks s ORDER BY s.sort_order,s.name COLLATE NOCASE`).all() as unknown as NotebookStack[];
-  }
-  create(name: string): NotebookStack | null {
-    const id = uuid(), now = Date.now();
-    try { this.db.prepare("INSERT INTO notebook_stacks(id,name,created_at,updated_at) VALUES(?,?,?,?)").run(id,name,now,now); }
-    catch (e) { if (e instanceof Error && e.message.includes("UNIQUE")) return null; throw e; }
-    return this.list().find(x => x.id === id) ?? null;
-  }
-  rename(id: string, name: string): NotebookStack | null {
-    try { const n=this.db.prepare("UPDATE notebook_stacks SET name=?,updated_at=? WHERE id=?").run(name,Date.now(),id); if (!n.changes) return null; }
-    catch(e) { if(e instanceof Error && e.message.includes("UNIQUE")) return null; throw e; }
-    return this.list().find(x=>x.id===id) ?? null;
-  }
-  delete(id: string): boolean { return this.db.prepare("DELETE FROM notebook_stacks WHERE id=?").run(id).changes > 0; }
 }
 
 export class NoteFoldersRepo {
@@ -513,12 +486,17 @@ export class TagsRepo {
   list(): Tag[] {
     return this.db
       .prepare(
-        `SELECT t.id, t.name,
+        `SELECT t.id, t.name, t.color,
                 (SELECT COUNT(*) FROM note_tags nt JOIN notes n ON n.id = nt.note_id
                  WHERE nt.tag_id = t.id AND n.deleted_at IS NULL) AS noteCount
          FROM tags t ORDER BY t.name COLLATE NOCASE`
       )
       .all() as unknown as Tag[];
+  }
+
+  setColor(id: number, color: string | null): boolean {
+    if (color !== null && !/^#[0-9a-f]{6}$/i.test(color)) throw new Error("Cor de etiqueta inválida.");
+    return this.db.prepare("UPDATE tags SET color=? WHERE id=?").run(color, id).changes > 0;
   }
 
   create(name: string): Tag | null {
@@ -527,7 +505,7 @@ export class TagsRepo {
     if (this.hasName(name)) return null;
     try {
       const result = this.db.prepare("INSERT INTO tags (name) VALUES (?)").run(name);
-      return { id: Number(result.lastInsertRowid), name, noteCount: 0 };
+      return { id: Number(result.lastInsertRowid), name, color: null, noteCount: 0 };
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE")) return null;
       throw err;

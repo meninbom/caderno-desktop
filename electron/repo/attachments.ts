@@ -178,8 +178,7 @@ export interface BackupPayload {
   app: string;
   schemaVersion: number;
   exportedAt: number;
-  notebooks: { id: number; name: string; stackId?: string | null }[];
-  stacks?: { id: string; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
+  notebooks: { id: number; name: string }[];
   folders?: { id: string; notebookId: number; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
   notes: {
     id: string;
@@ -215,8 +214,7 @@ export class BackupRepo {
     const attachmentDir=this.attachmentsDir;
     const assetRows=attachmentDir ? this.db.prepare("SELECT stored_name,kind,byte_size FROM attachments ORDER BY id").all() as {stored_name:string;kind:string;byte_size:number}[] : [];
     if(assetRows.some(f=>f.byte_size>(f.kind==="image"?10:50)*1024*1024)||assetRows.reduce((n,f)=>n+f.byte_size,0)>300*1024*1024) throw new Error("Backup excede limites: imagens até 10 MB, outros anexos até 50 MB e total até 300 MB.");
-    const notebooks = this.db.prepare("SELECT id, name, stack_id AS stackId FROM notebooks").all() as unknown as { id: number; name: string; stackId: string | null }[];
-    const stacks = this.db.prepare("SELECT id,name,sort_order AS sortOrder,created_at AS createdAt,updated_at AS updatedAt FROM notebook_stacks ORDER BY sort_order,name COLLATE NOCASE").all() as unknown as BackupPayload["stacks"];
+    const notebooks = this.db.prepare("SELECT id, name FROM notebooks").all() as unknown as { id: number; name: string }[];
     const folders = this.db.prepare("SELECT id,notebook_id AS notebookId,name,sort_order AS sortOrder,created_at AS createdAt,updated_at AS updatedAt FROM note_folders ORDER BY sort_order,name COLLATE NOCASE").all() as unknown as BackupPayload["folders"];
     const noteRows = this.db.prepare("SELECT id, notebook_id, folder_id, title, content_html, favorited, pinned, deleted_at, created_at, updated_at FROM notes").all() as unknown as {
       id: string;
@@ -244,7 +242,6 @@ export class BackupRepo {
       schemaVersion: 9,
       exportedAt: Date.now(),
       notebooks,
-      stacks,
       folders,
       notes: noteRows.map(n => ({
         id: n.id,
@@ -301,13 +298,6 @@ export class BackupRepo {
     if(this.attachmentsDir) for(const {a} of validatedAssets){const dest=path.join(this.attachmentsDir,a.storedName);if(fs.existsSync(dest)&&crypto.createHash("sha256").update(fs.readFileSync(dest)).digest("hex")!==a.sha256)return {ok:false,error:"Backup inválido: colisão de nome de anexo"};}
     const apply = this.db.transaction(() => {
       const notebookMap = new Map<number, number>();
-      const stackMap = new Map<string, string>();
-      for (const stack of payload.stacks ?? []) {
-        const existing = this.db.prepare("SELECT id FROM notebook_stacks WHERE name=? COLLATE NOCASE").get(stack.name) as {id:string}|undefined;
-        const id = existing?.id ?? stack.id;
-        this.db.prepare("INSERT INTO notebook_stacks(id,name,sort_order,created_at,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,sort_order=excluded.sort_order,updated_at=excluded.updated_at").run(id,stack.name,stack.sortOrder,stack.createdAt,stack.updatedAt);
-        stackMap.set(stack.id,id);
-      }
       const getOrCreateNotebook = (name: string): number => {
         const found = this.db.prepare("SELECT id FROM notebooks WHERE name = ? COLLATE NOCASE").get(name) as { id: number } | undefined;
         if (found) return found.id;
@@ -316,7 +306,6 @@ export class BackupRepo {
       };
       for (const nb of payload.notebooks) {
         notebookMap.set(nb.id, getOrCreateNotebook(nb.name));
-        if (nb.stackId && stackMap.has(nb.stackId)) this.db.prepare("UPDATE notebooks SET stack_id=? WHERE id=?").run(stackMap.get(nb.stackId), notebookMap.get(nb.id));
       }
       const folderMap = new Map<string, string>();
       for (const folder of payload.folders ?? []) {

@@ -260,7 +260,7 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
                   {n.tags.length > 0 && (
                     <span className="meta-tags">
                       {n.tags.slice(0, 3).map((t) => (
-                        <span key={`chip-${n.id}-${t.id}`} className="meta-tag">{t.name}</span>
+                        <span key={`chip-${n.id}-${t.id}`} className="meta-tag" style={t.color ? { "--tag-color": t.color } as React.CSSProperties : undefined}>{t.name}</span>
                       ))}
                     </span>
                   )}

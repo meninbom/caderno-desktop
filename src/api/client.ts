@@ -4,7 +4,6 @@ import {
   NoteFull,
   NoteMeta,
   Notebook,
-  NotebookStack,
   NoteLinkTarget,
   SidebarCounts,
   Tag,
@@ -29,6 +28,7 @@ function getBridge(): RendererBridge {
 }
 
 export class DesktopClient implements CadernoClient {
+  openExternal(url: string): Promise<boolean> { return this.call("external:open", { url }) as Promise<boolean>; }
   listTasks(filter:'today'|'upcoming'|'overdue'|'completed'|'all',priority?:'all'|'low'|'normal'|'high'):Promise<Task[]>{return this.call('tasks:list',{filter,priority}) as Promise<Task[]>} createTask(x:ChannelInputs['tasks:create']):Promise<string>{return this.call('tasks:create',x) as Promise<string>} updateTask(x:ChannelInputs['tasks:update']):Promise<boolean>{return this.call('tasks:update',x) as Promise<boolean>} deleteTask(id:string):Promise<boolean>{return this.call('tasks:delete',{id}) as Promise<boolean>}
   listEvents(startAt:number,endAt:number):Promise<CalendarEvent[]>{return this.call('events:list',{startAt,endAt}) as Promise<CalendarEvent[]>} createEvent(x:{noteId:string|null;title:string;description:string;startAt:number;endAt:number;timeZone:string;allDay:boolean}):Promise<string>{return this.call('events:create',x) as Promise<string>} updateEvent(x:{id:string;noteId?:string|null;title?:string;description?:string;startAt?:number;endAt?:number;timeZone?:string;allDay?:boolean}):Promise<boolean>{return this.call('events:update',x) as Promise<boolean>} deleteEvent(id:string):Promise<boolean>{return this.call('events:delete',{id}) as Promise<boolean>}
   private async call<K extends keyof ChannelInputs>(channel: K, input: ChannelInputs[K] | null): Promise<unknown> {
@@ -91,11 +91,6 @@ export class DesktopClient implements CadernoClient {
   deleteNotebook(id: number): Promise<boolean> {
     return this.call("notebooks:delete", { id }) as Promise<boolean>;
   }
-  moveNotebookToStack(notebookId: number, stackId: string | null): Promise<boolean> { return this.call("notebooks:moveToStack", { notebookId, stackId }) as Promise<boolean>; }
-  listStacks(): Promise<NotebookStack[]> { return this.call("stacks:list", null) as Promise<NotebookStack[]>; }
-  createStack(name: string): Promise<NotebookStack | null> { return this.call("stacks:create", { name }) as Promise<NotebookStack | null>; }
-  renameStack(id: string, name: string): Promise<NotebookStack | null> { return this.call("stacks:rename", { id, name }) as Promise<NotebookStack | null>; }
-  deleteStack(id: string): Promise<boolean> { return this.call("stacks:delete", { id }) as Promise<boolean>; }
   listFolders(): Promise<import("../../shared/ipc").NoteFolder[]> { return this.call("folders:list", null) as Promise<import("../../shared/ipc").NoteFolder[]>; }
   createFolder(notebookId: number, name: string): Promise<import("../../shared/ipc").NoteFolder | null> { return this.call("folders:create", { notebookId, name }) as Promise<import("../../shared/ipc").NoteFolder | null>; }
   renameFolder(id: string, name: string): Promise<import("../../shared/ipc").NoteFolder | null> { return this.call("folders:rename", { id, name }) as Promise<import("../../shared/ipc").NoteFolder | null>; }
@@ -110,6 +105,7 @@ export class DesktopClient implements CadernoClient {
   renameTag(id: number, name: string): Promise<Tag | null> {
     return this.call("tags:rename", { id, name }) as Promise<Tag | null>;
   }
+  setTagColor(id: number, color: string | null): Promise<boolean> { return this.call("tags:setColor", { id, color }) as Promise<boolean>; }
   deleteTag(id: number): Promise<boolean> {
     return this.call("tags:delete", { id }) as Promise<boolean>;
   }

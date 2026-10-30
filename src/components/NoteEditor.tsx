@@ -139,6 +139,22 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
     onBlur: () => { if (saveTimer.current !== null) { window.clearTimeout(saveTimer.current); void flushSave(); } },
   });
 
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey && !e.metaKey) return;
+      if (!editor?.view.dom.contains(document.activeElement)) return;
+      if (e.key === "+" || e.key === "=") { e.preventDefault(); onAppearanceChange({ editorZoom: Math.min(200, appearance.editorZoom + 10) }); }
+      else if (e.key === "-") { e.preventDefault(); onAppearanceChange({ editorZoom: Math.max(50, appearance.editorZoom - 10) }); }
+      else if (e.key === "0") { e.preventDefault(); onAppearanceChange({ editorZoom: 100 }); }
+    };
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || !editor?.view.dom.contains(e.target as Node)) return;
+      e.preventDefault(); onAppearanceChange({ editorZoom: Math.max(50, Math.min(200, appearance.editorZoom + (e.deltaY < 0 ? 10 : -10))) });
+    };
+    window.addEventListener("keydown", onKey); window.addEventListener("wheel", onWheel, { passive: false });
+    return () => { window.removeEventListener("keydown", onKey); window.removeEventListener("wheel", onWheel); };
+  }, [editor, appearance.editorZoom, onAppearanceChange]);
+
   // Troca de nota: salva edição pendente da nota anterior e aplica o conteúdo novo.
   useEffect(() => {
     if (!editor) return;
@@ -155,6 +171,11 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
       const target = event.target as HTMLElement;
       if(target instanceof HTMLImageElement){event.preventDefault();setImagePreview({src:target.src,alt:target.alt||"Imagem da nota"});return;}
       const anchor = target.closest("a[href]") as HTMLAnchorElement | null;
+      if (anchor && !anchor.getAttribute("href")?.startsWith("caderno-note://")) {
+        const href = anchor.getAttribute("href") || "";
+        if (/^(https?:\/\/|mailto:)/i.test(href)) { event.preventDefault(); void client.openExternal(href); }
+        return;
+      }
       const match = anchor?.getAttribute("href")?.match(/^caderno-note:\/\/([0-9a-f-]{36})$/i);
       if (!anchor || !match) return;
       event.preventDefault();
@@ -255,7 +276,8 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
 
   return (
     <div className="editor-pane">
-      <div className="editor-topbar">
+      <div className="editor-topbar" title="Links externos abrem no navegador padrão ao clicar">
+        <div className="note-zoom" role="group" aria-label="Zoom da nota"><button aria-label="Diminuir zoom" title="Ctrl/Cmd −" onClick={() => onAppearanceChange({ editorZoom: Math.max(50, appearance.editorZoom - 10) })}>−</button><span>{appearance.editorZoom}%</span><button aria-label="Aumentar zoom" title="Ctrl/Cmd +" onClick={() => onAppearanceChange({ editorZoom: Math.min(200, appearance.editorZoom + 10) })}>+</button><button aria-label="Redefinir zoom" title="Ctrl/Cmd 0" onClick={() => onAppearanceChange({ editorZoom: 100 })}>100%</button></div>
         <button type="button" className="reference-toggle" aria-pressed={referenceId !== null} title={referenceId ? "Fechar nota de referência" : "Abrir outra nota ao lado (somente leitura)"} aria-label={referenceId ? "Fechar nota de referência" : "Abrir nota de referência ao lado"} onClick={() => { if (referenceId) setReferenceId(null); else { setPickerTarget(null); setReferencePicker(true); } }}><Columns2 size={14} /><span>Lado a lado</span></button>
         <WritingLayoutControl appearance={appearance} update={onAppearanceChange} />
       </div>

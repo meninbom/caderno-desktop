@@ -217,6 +217,16 @@ const MIGRATIONS = [
       CREATE INDEX idx_notes_folder ON notes(folder_id);
       CREATE INDEX idx_note_folders_notebook ON note_folders(notebook_id, sort_order, name COLLATE NOCASE);`);
   } },
+  { version: 14, up(db: Database.Database): void {
+    const columns = db.prepare("PRAGMA table_info(tags)").all() as { name: string }[];
+    if (!columns.some(column => column.name === "color")) db.exec("ALTER TABLE tags ADD COLUMN color TEXT;");
+  } },
+  { version: 15, up(db: Database.Database): void {
+    // Remove as associações ativas, mantendo notebooks e tabelas legadas intactos.
+    const notebookColumns = db.prepare("PRAGMA table_info(notebooks)").all() as { name: string }[];
+    if (notebookColumns.some(column => column.name === "stack_id")) db.exec("UPDATE notebooks SET stack_id=NULL WHERE stack_id IS NOT NULL;");
+    if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notebook_stacks'").get()) db.exec("DELETE FROM notebook_stacks;");
+  } },
 ];
 
 export function preparePaths(files: RepositoryFiles): void {

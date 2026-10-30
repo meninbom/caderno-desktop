@@ -4,7 +4,6 @@ import type {
   NoteFull,
   NoteMeta,
   Notebook,
-  NotebookStack,
   NoteFolder,
   NoteLinkTarget,
   SidebarCounts,
@@ -31,6 +30,7 @@ export type BackupRestoreResult =
  * mantendo a persistência desktop (SQLite) isolada do preview de navegador.
  */
 export interface CadernoClient {
+  openExternal(url: string): Promise<boolean>;
   listTasks(filter:'today'|'upcoming'|'overdue'|'completed'|'all',priority?:'all'|'low'|'normal'|'high'):Promise<Task[]>; createTask(x:ChannelInputs['tasks:create']):Promise<string>; updateTask(x:ChannelInputs['tasks:update']):Promise<boolean>; deleteTask(id:string):Promise<boolean>;
   listEvents(startAt:number,endAt:number):Promise<CalendarEvent[]>; createEvent(x:{noteId:string|null;title:string;description:string;startAt:number;endAt:number;timeZone:string;allDay:boolean}):Promise<string>; updateEvent(x:{id:string;noteId?:string|null;title?:string;description?:string;startAt?:number;endAt?:number;timeZone?:string;allDay?:boolean}):Promise<boolean>; deleteEvent(id:string):Promise<boolean>;
   listNotes(input: ListNotesQuery): Promise<NoteMeta[]>;
@@ -55,11 +55,6 @@ export interface CadernoClient {
   createNotebook(name: string): Promise<Notebook | null>;
   renameNotebook(id: number, name: string): Promise<Notebook | null>;
   deleteNotebook(id: number): Promise<boolean>;
-  moveNotebookToStack(notebookId: number, stackId: string | null): Promise<boolean>;
-  listStacks(): Promise<NotebookStack[]>;
-  createStack(name: string): Promise<NotebookStack | null>;
-  renameStack(id: string, name: string): Promise<NotebookStack | null>;
-  deleteStack(id: string): Promise<boolean>;
   listFolders(): Promise<NoteFolder[]>;
   createFolder(notebookId: number, name: string): Promise<NoteFolder | null>;
   renameFolder(id: string, name: string): Promise<NoteFolder | null>;
@@ -68,6 +63,7 @@ export interface CadernoClient {
   listTags(): Promise<Tag[]>;
   createTag(name: string): Promise<Tag | null>;
   renameTag(id: number, name: string): Promise<Tag | null>;
+  setTagColor(id: number, color: string | null): Promise<boolean>;
   deleteTag(id: number): Promise<boolean>;
   attachTag(noteId: string, tagId: number): Promise<boolean>;
   detachTag(noteId: string, tagId: number): Promise<boolean>;

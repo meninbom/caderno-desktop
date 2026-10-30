@@ -26,32 +26,6 @@ function Item({ icon, label, count, active, onClick, draggable, onDragStart, onD
   );
 }
 
-type Stack = Awaited<ReturnType<typeof client.listStacks>>[number];
-
-function StackMenu({ notebookName, stackId, stacks, onMove }: {
-  notebookName: string; stackId: string | null; stacks: Stack[]; onMove: (stackId: string | null) => void;
-}) {
-  const [open, setOpen] = useState(false);
-  const popover = useDismissablePopover(open, () => setOpen(false));
-  const choices = [{ id: null as string | null, name: "Sem pilha" }, ...stacks.map(s => ({ id: s.id as string | null, name: s.name }))];
-  return (
-    <span className="pop-anchor nb-stack-anchor" ref={popover.rootRef}>
-      <button ref={popover.triggerRef} className="icon" title="Mover para pilha" aria-label={`Pilha de ${notebookName}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><FolderInput size={12} /></button>
-      {open && (
-        <div className="stack-menu" role="menu" aria-label={`Mover ${notebookName} para pilha`}>
-          <div className="menu-label">Mover para pilha</div>
-          {choices.map(c => (
-            <button key={c.id ?? "none"} className="menu-row" role="menuitemradio" aria-checked={(stackId ?? null) === c.id} onClick={() => { setOpen(false); onMove(c.id); }}>
-              <span className="menu-check">{(stackId ?? null) === c.id && <Check size={12} strokeWidth={2.2} />}</span>
-              <span className="menu-text">{c.name}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </span>
-  );
-}
-
 export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBackup, onClipper, area, onArea, onSettings, alerts, onCollapse, onCommand, onTemplates }: {
   onCommand?:()=>void; onTemplates?:()=>void;
   onImportClick?: () => void;
@@ -69,8 +43,6 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
   const [renameValue, setRenameValue] = useState("");
   const [moreOpen, setMoreOpen] = useState(false);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
-  const [stacks, setStacks] = useState<Awaited<ReturnType<typeof client.listStacks>>>([]);
-  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [closedNotebooks, setClosedNotebooks] = useState<Record<number, boolean>>({});
   const [closedFolders, setClosedFolders] = useState<Record<string, boolean>>({});
   const [treeNotes, setTreeNotes] = useState<NoteMeta[]>([]);
@@ -79,11 +51,8 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
   const dragClick = useRef(false);
   const expandTimer = useRef<number | null>(null);
   const expandKey = useRef<string | null>(null);
-  const [stackDialog, setStackDialog] = useState<{ action: "create" | "rename" | "duplicate"; id?: string; value: string } | null>(null);
   const [folderDialog, setFolderDialog] = useState<{ action: "create" | "rename"; notebookId: number; id?: string; value: string } | null>(null);
   const morePopover = useDismissablePopover(moreOpen, () => setMoreOpen(false));
-  const refreshStacks = async () => setStacks(await client.listStacks());
-  useEffect(() => { void refreshStacks(); }, []);
   useEffect(() => () => { if (expandTimer.current !== null) window.clearTimeout(expandTimer.current); }, []);
   const treeToken = [
     state.counts.all,
@@ -99,31 +68,6 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
     }).catch(() => {});
     return () => { cancel = true; };
   }, [treeToken]);
-
-  const stackAction = async (action: "create" | "rename" | "duplicate" | "delete", id?: string, existingName?: string) => {
-    if (action === "delete") {
-      if (!id) return;
-      if (!window.confirm("Excluir esta pilha? Os cadernos serão mantidos e desvinculados.")) return;
-      await client.deleteStack(id);
-    } else {
-      const initial = action === "duplicate" ? `${existingName ?? "Pilha"} (cópia)` : (action === "rename" ? existingName : "");
-      setStackDialog({ action, id, value: initial ?? "" });
-      return;
-    }
-    await refreshStacks(); await refreshMeta();
-  };
-
-  const submitStackDialog = async () => {
-    const dialog = stackDialog;
-    const name = dialog?.value.trim();
-    if (!dialog || !name) return;
-    const saved = dialog.action === "rename" && dialog.id
-      ? await client.renameStack(dialog.id, name)
-      : await client.createStack(name);
-    if (!saved) { dispatch({ type: "error", message: `Já existe uma pilha com o nome "${name}".` }); return; }
-    setStackDialog(null);
-    await refreshStacks(); await refreshMeta();
-  };
 
   const submitFolderDialog = async () => {
     const dialog = folderDialog;
@@ -334,12 +278,11 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
       className={`notebook-block ${dropKey === `notebook:${nb.id}` ? "drop-target" : ""}`}
       {...bindDrop(`notebook:${nb.id}`, { kind: "notebook", notebookId: nb.id }, notebookClosed && hasChildren ? () => setClosedNotebooks(current => ({ ...current, [nb.id]: false })) : undefined)}
     >
-      <div className={`notebook-stack-row tree-row ${active ? "active" : ""}`}>
+      <div className={`notebook-row tree-row ${active ? "active" : ""}`}>
       {hasChildren ? <button type="button" className="tree-chevron" aria-expanded={!notebookClosed} title={notebookClosed ? "Expandir" : "Recolher"} aria-label={`${notebookClosed ? "Expandir" : "Recolher"}${folders.length > 0 ? " pastas de" : ""} ${nb.name}`} onClick={() => setClosedNotebooks(current => ({ ...current, [nb.id]: !notebookClosed }))}>{notebookClosed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button> : <span className="tree-chevron-spacer" aria-hidden="true" />}
       {renamingId === nb.id ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenamingId(null); }} onBlur={() => void commitRename()} style={{ width: "100%", padding: "4px 8px", fontSize: 12.5 }} /> : <Item icon={<Book size={15} />} label={nb.name} count={nb.noteCount} active={active} onClick={() => select({ kind: "notebook", notebookId: nb.id })} />}
       {renamingId !== nb.id && <span className="nb-actions">
         <button type="button" className="icon" title="Nova pasta" aria-label={`Nova pasta em ${nb.name}`} onClick={() => setFolderDialog({ action: "create", notebookId: nb.id, value: "" })}><FolderPlus size={13} /></button>
-        <StackMenu notebookName={nb.name} stackId={nb.stackId ?? null} stacks={stacks} onMove={async id => { await client.moveNotebookToStack(nb.id, id); await refreshMeta(); await refreshStacks(); }} />
         <button type="button" className="icon" title="Renomear" aria-label={`Renomear ${nb.name}`} onClick={() => startRename(nb.id, nb.name)}><Pencil size={13} /></button>
         <button type="button" className="icon" title="Excluir caderno" aria-label={`Excluir ${nb.name}`} onClick={() => void removeNotebook(nb.id)}><Trash2 size={13} /></button>
       </span>}
@@ -419,7 +362,7 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
       <Item icon={<Star size={15} />} label="Favoritas" count={state.counts.favorites} active={state.selection.kind === "favorites"} onClick={() => select({ kind: "favorites" })} />
       <Item icon={<Trash2 size={15} />} label="Lixeira" count={state.counts.trash} active={state.selection.kind === "trash"} onClick={() => select({ kind: "trash" })} />
 
-      <div className="nav-section-label stack-section-heading"><span>Cadernos</span><button className="icon" title="Criar pilha" aria-label="Criar pilha" onClick={() => void stackAction("create")}><FolderPlus size={13} /></button></div>
+      <div className="nav-section-label"><span>Cadernos</span></div>
       {creating ? (
         <div style={{ padding: "2px 8px" }}>
           <input
@@ -445,16 +388,7 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
           onClick={() => select({ kind: "unfiled" })}
         />
       )}
-      {stacks.map(stack => <React.Fragment key={`stack-${stack.id}`}>
-        <div className="stack-heading">
-          <button className="stack-toggle" aria-label={`${collapsed[stack.id] ? "Expandir" : "Recolher"} ${stack.name}`} onClick={() => setCollapsed(v => ({ ...v, [stack.id]: !v[stack.id] }))}>{collapsed[stack.id] ? <ChevronRight size={13} /> : <ChevronDown size={13} />}<span>{stack.name}</span><small>{stack.notebookCount}</small></button>
-          <button className="icon" title={`Duplicar pilha ${stack.name}`} aria-label={`Duplicar pilha ${stack.name}`} onClick={() => void stackAction("duplicate", stack.id, stack.name)}><Copy size={12} /></button>
-          <button className="icon" title={`Renomear pilha ${stack.name}`} aria-label={`Renomear pilha ${stack.name}`} onClick={() => void stackAction("rename", stack.id, stack.name)}><Pencil size={12} /></button>
-          <button className="icon" title={`Excluir pilha ${stack.name}`} aria-label={`Excluir pilha ${stack.name}`} onClick={() => void stackAction("delete", stack.id, stack.name)}><Trash2 size={12} /></button>
-        </div>
-        {!collapsed[stack.id] && state.notebooks.filter(nb => nb.stackId === stack.id).map(nb => renderNotebook(nb))}
-      </React.Fragment>)}
-      {state.notebooks.filter(nb => !nb.stackId || !stacks.some(s => s.id === nb.stackId)).map((nb) => renderNotebook(nb))}
+      {state.notebooks.map(nb => renderNotebook(nb))}
 
       <div className="nav-section-label tags-section-heading"><span>Etiquetas</span><button aria-label="Gerenciar etiquetas" title="Gerenciar etiquetas" onClick={() => setTagManagerOpen(true)}><Settings size={13}/></button></div>
       {state.tags.length === 0 && <span style={{ padding: "2px 10px", color: "var(--text-faint)", fontSize: 12 }}>Nenhuma etiqueta</span>}
@@ -462,7 +396,7 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
       {state.tags.map((t) => (
         <Item
           key={`tag-${t.id}`}
-          icon={<TagIcon size={15} />}
+          icon={<TagIcon size={15} color={t.color ?? undefined} />}
           label={t.name}
           count={t.noteCount}
           active={state.selection.kind === "tag" && state.selection.tagId === t.id}
@@ -514,16 +448,8 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
           {state.theme === "light" ? <MoonStar size={14} /> : <SunMedium size={14} />}
         </button>
       </div>
-      {stackDialog && <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setStackDialog(null); }}>
-        <section className="modal stack-dialog" role="dialog" aria-modal="true" aria-labelledby="stack-dialog-title" onKeyDown={e => { if (e.key === "Escape") setStackDialog(null); }}>
-          <h3 id="stack-dialog-title">{stackDialog.action === "rename" ? "Renomear pilha" : stackDialog.action === "duplicate" ? "Duplicar pilha" : "Criar pilha"}</h3>
-          <label htmlFor="stack-name">Nome</label>
-          <input id="stack-name" autoFocus value={stackDialog.value} maxLength={80} onChange={e => setStackDialog({ ...stackDialog, value: e.target.value })} onKeyDown={e => { if (e.key === "Enter") void submitStackDialog(); }} />
-          <div className="row"><button onClick={() => setStackDialog(null)}>Cancelar</button><button className="primary" disabled={!stackDialog.value.trim()} onClick={() => void submitStackDialog()}>{stackDialog.action === "rename" ? "Salvar" : "Criar"}</button></div>
-        </section>
-      </div>}
       {folderDialog && <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setFolderDialog(null); }}>
-        <section className="modal stack-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title" onKeyDown={e => { if (e.key === "Escape") setFolderDialog(null); }}>
+        <section className="modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title" onKeyDown={e => { if (e.key === "Escape") setFolderDialog(null); }}>
           <h3 id="folder-dialog-title">{folderDialog.action === "rename" ? "Renomear pasta" : "Nova pasta"}</h3>
           <label htmlFor="folder-name">Nome</label>
           <input id="folder-name" autoFocus value={folderDialog.value} maxLength={120} onChange={e => setFolderDialog({ ...folderDialog, value: e.target.value })} onKeyDown={e => { if (e.key === "Enter") void submitFolderDialog(); }} />

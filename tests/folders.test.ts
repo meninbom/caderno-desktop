@@ -37,7 +37,7 @@ describe("pastas de notas", () => {
     const legacy = new Database(file);
     legacy.exec(`CREATE TABLE migration_log(version INTEGER PRIMARY KEY, applied_at INTEGER NOT NULL);
       INSERT INTO migration_log VALUES (12, 1);
-      CREATE TABLE notebooks(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, color TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, stack_id TEXT, sort_order INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE notebooks(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE, color TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL, sort_order INTEGER NOT NULL DEFAULT 0);
       CREATE TABLE notes(id TEXT PRIMARY KEY, notebook_id INTEGER, title TEXT NOT NULL DEFAULT '', content_html TEXT NOT NULL DEFAULT '', content_text TEXT NOT NULL DEFAULT '', favorited INTEGER NOT NULL DEFAULT 0, pinned INTEGER NOT NULL DEFAULT 0, deleted_at INTEGER, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE TABLE tags(id INTEGER PRIMARY KEY, name TEXT NOT NULL UNIQUE COLLATE NOCASE);
       CREATE TABLE note_tags(note_id TEXT NOT NULL, tag_id INTEGER NOT NULL, PRIMARY KEY(note_id, tag_id));
@@ -50,7 +50,7 @@ describe("pastas de notas", () => {
     expect(note?.title).toBe("Antiga");
     expect(note?.notebookId).toBe(1);
     expect(note?.folderId).toBeNull();
-    expect(db.prepare("SELECT MAX(version) AS version FROM migration_log").get()).toEqual({ version: 13 });
+    expect(db.prepare("SELECT MAX(version) AS version FROM migration_log").get()).toEqual({ version: 15 });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='note_folders'").get()).toEqual({ name: "note_folders" });
   });
 

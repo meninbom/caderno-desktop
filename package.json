@@ -1,6 +1,6 @@
 {
   "name": "caderno",
-  "version": "0.12.3",
+  "version": "0.13.0",
   "description": "App desktop de anotações inspirado no Evernote",
   "main": "dist-electron/main.cjs",
   "scripts": {
@@ -74,7 +74,7 @@
     "appId": "com.caderno.app",
     "productName": "Caderno",
     "directories": {
-      "output": "release-0.12.3"
+      "output": "release-0.13.0"
     },
     "files": [
       "dist/**/*",

@@ -17,7 +17,7 @@ export interface NoteMeta {
   title: string;
   favorited: boolean;
   pinned: boolean;
-  tags: { id: number; name: string }[];
+  tags: { id: number; name: string; color: string | null }[];
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
@@ -40,10 +40,7 @@ export interface Notebook {
   name: string;
   createdAt: number;
   noteCount: number;
-  stackId: string | null;
 }
-
-export interface NotebookStack { id: string; name: string; sortOrder: number; notebookCount: number; noteCount: number; createdAt: number; updatedAt: number }
 export interface NoteFolder { id: string; notebookId: number; name: string; sortOrder: number; noteCount: number; createdAt: number; updatedAt: number }
 export interface NoteLinkTarget { id: string; title: string; preview: string }
 export interface PdfAnnotation { id:string; storedName:string; page:number; kind:"highlight"|"comment"; rect:{x:number;y:number;width:number;height:number}; comment:string; createdAt:number; updatedAt:number }
@@ -53,6 +50,7 @@ export interface CalendarEvent { id:string; noteId:string|null; noteTitle:string
 export interface Tag {
   id: number;
   name: string;
+  color: string | null;
   noteCount: number;
 }
 
@@ -107,10 +105,6 @@ export const FlagInputSchema = z.object({ id: IdSchema, value: z.boolean() });
 
 export const CreateNotebookInputSchema = z.object({ name: z.string().min(1).max(120) });
 export const RenameNotebookInputSchema = z.object({ id: z.number().int(), name: z.string().min(1).max(120) });
-export const StackIdInputSchema = z.object({ id: IdSchema });
-export const StackNameInputSchema = z.object({ name: z.string().trim().min(1).max(120) });
-export const RenameStackInputSchema = StackIdInputSchema.extend({ name: z.string().trim().min(1).max(120) });
-export const MoveNotebookStackInputSchema = z.object({ notebookId: z.number().int().positive(), stackId: IdSchema.nullable() });
 export const FindNotesInputSchema = z.object({ query: z.string().trim().max(200), limit: z.number().int().min(1).max(50).default(20) });
 const RecurrenceSchema=z.enum(['none','daily','weekly','monthly']);
 const PrioritySchema=z.enum(['low','normal','high']);
@@ -130,6 +124,7 @@ export const AttachTagInputSchema = z.object({ noteId: IdSchema, tagId: z.number
 export const DetachTagInputSchema = z.object({ noteId: IdSchema, tagId: z.number().int() });
 export const CreateTagInputSchema = z.object({ name: z.string().trim().min(1).max(80) });
 export const RenameTagInputSchema = CreateTagInputSchema.extend({ id: z.number().int().positive() });
+export const TagColorInputSchema = z.object({ id: z.number().int().positive(), color: z.string().regex(/^#[0-9a-f]{6}$/i).nullable() });
 export const DeleteTagInputSchema = z.object({ id: z.number().int().positive() });
 
 export const SaveAttachmentInputSchema = z.object({ noteId: IdSchema, name: z.string().min(1).max(300), dataBase64: z.string().max(70_000_000) });
@@ -181,6 +176,7 @@ export const QaSaveDialogSchema = z.object({ mode: z.enum(["cancel", "path"]), f
 
 /** Mapa canal -> payload de entrada (útil no lado do main para despacho tipado). */
 export interface ChannelInputs {
+  "external:open": { url: string };
   "tasks:list": z.infer<typeof TaskListSchema>; "tasks:create":z.infer<typeof TaskCreateSchema>; "tasks:update":z.infer<typeof TaskUpdateSchema>; "tasks:delete":z.infer<typeof IdInputSchema>; "tasks:reminder-due":null;
   "events:list":z.infer<typeof EventRangeSchema>; "events:create":z.infer<typeof EventCreateSchema>; "events:update":z.infer<typeof EventUpdateSchema>; "events:delete":z.infer<typeof IdInputSchema>;
   "notes:list": ListNotesQuery;
@@ -203,19 +199,15 @@ export interface ChannelInputs {
   "notebooks:create": z.infer<typeof CreateNotebookInputSchema>;
   "notebooks:rename": z.infer<typeof RenameNotebookInputSchema>;
   "notebooks:delete": { id: number };
-  "notebooks:moveToStack": z.infer<typeof MoveNotebookStackInputSchema>;
-  "stacks:list": null;
-  "stacks:create": z.infer<typeof StackNameInputSchema>;
-  "stacks:rename": z.infer<typeof RenameStackInputSchema>;
-  "stacks:delete": z.infer<typeof StackIdInputSchema>;
   "folders:list": null;
   "folders:create": z.infer<typeof CreateFolderInputSchema>;
   "folders:rename": z.infer<typeof RenameFolderInputSchema>;
   "folders:move": z.infer<typeof MoveFolderInputSchema>;
-  "folders:delete": z.infer<typeof StackIdInputSchema>;
+  "folders:delete": z.infer<typeof IdInputSchema>;
   "tags:list": null;
   "tags:create": z.infer<typeof CreateTagInputSchema>;
   "tags:rename": z.infer<typeof RenameTagInputSchema>;
+  "tags:setColor": z.infer<typeof TagColorInputSchema>;
   "tags:delete": z.infer<typeof DeleteTagInputSchema>;
   "tags:attach": z.infer<typeof AttachTagInputSchema>;
   "tags:detach": z.infer<typeof DetachTagInputSchema>;

@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { Readable } from "node:stream";
 import { openDatabase } from "./repo/db";
-import { CountsRepo, Meta, NotebooksRepo, NotesRepo, TagsRepo, NotebookStacksRepo, NoteFoldersRepo, TasksRepo, EventsRepo, AttachmentJobsRepo } from "./repo/sqlite";
+import { CountsRepo, Meta, NotebooksRepo, NotesRepo, TagsRepo, NoteFoldersRepo, TasksRepo, EventsRepo, AttachmentJobsRepo } from "./repo/sqlite";
 import { AttachmentsRepo, BackupRepo, inspectRaster } from "./repo/attachments";
 import { PdfAnnotationsRepo } from './repo/pdf-annotations';
 import { TranscriptionsRepo } from "./repo/sqlite";
@@ -37,7 +37,7 @@ function isTrustedRendererUrl(raw: string): boolean {
 }
 
 function safeExternalUrl(raw: string): boolean {
-  try { const url = new URL(raw); return (url.protocol === "http:" || url.protocol === "https:") && !url.username && !url.password; }
+  try { const url = new URL(raw); return ["http:", "https:", "mailto:"].includes(url.protocol) && !url.username && !url.password; }
   catch { return false; }
 }
 
@@ -71,7 +71,6 @@ if (process.env.CADERNO_USER_DATA) {
 let repos: {
   notes: NotesRepo;
   notebooks: NotebooksRepo;
-  stacks: NotebookStacksRepo;
   folders: NoteFoldersRepo;
   tags: TagsRepo;
   counts: CountsRepo;
@@ -367,11 +366,6 @@ function registerHandlers(): void {
     "notebooks:create": (input) => repos.notebooks.create(input.name),
     "notebooks:rename": (input) => repos.notebooks.rename(input.id, input.name),
     "notebooks:delete": (input) => repos.notebooks.delete(input.id),
-    "notebooks:moveToStack": (input) => repos.notebooks.moveToStack(input.notebookId, input.stackId),
-    "stacks:list": () => repos.stacks.list(),
-    "stacks:create": (input) => repos.stacks.create(input.name.trim()),
-    "stacks:rename": (input) => repos.stacks.rename(input.id, input.name.trim()),
-    "stacks:delete": (input) => repos.stacks.delete(input.id),
     "folders:list": () => repos.folders.list(),
     "folders:create": (input) => repos.folders.create(input.notebookId, input.name),
     "folders:rename": (input) => repos.folders.rename(input.id, input.name),
@@ -380,6 +374,8 @@ function registerHandlers(): void {
     "tags:list": () => repos.tags.list(),
     "tags:create": (input) => repos.tags.create(input.name),
     "tags:rename": (input) => repos.tags.rename(input.id, input.name),
+    "tags:setColor": (input) => repos.tags.setColor(input.id, input.color),
+    "external:open": (input) => { if (!safeExternalUrl(input.url)) return false; void shell.openExternal(input.url); return true; },
     "tags:delete": (input) => repos.tags.remove(input.id),
     "tags:attach": (input) => repos.tags.attach(input.noteId, input.tagId),
     "tags:detach": (input) => repos.tags.detach(input.noteId, input.tagId),
@@ -597,7 +593,6 @@ app.whenReady().then(() => {
   repos = {
     notes: new NotesRepo(db),
     notebooks: new NotebooksRepo(db),
-    stacks: new NotebookStacksRepo(db),
     folders: new NoteFoldersRepo(db),
     tags: new TagsRepo(db),
     counts: new CountsRepo(db),

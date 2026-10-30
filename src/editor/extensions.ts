@@ -18,7 +18,7 @@ import { NoteHighlight } from "./highlight";
 export function buildNoteExtensions(options: { resizableTables?: boolean } = {}) {
   return [
     StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
-    Link.configure({ openOnClick: false, autolink: true, isAllowedUri: (url, ctx) => url.startsWith("caderno-note://") || ctx.defaultValidate(url) }),
+    Link.configure({ openOnClick: false, autolink: true, linkOnPaste: true, HTMLAttributes: { title: "Clique para abrir no navegador padrão" }, isAllowedUri: (url, ctx) => url.startsWith("caderno-note://") || ctx.defaultValidate(url) }),
     TaskList,
     TaskItem.configure({ nested: true }),
     Table.configure({ resizable: options.resizableTables ?? true }), TableRow, TableHeader, TableCell,

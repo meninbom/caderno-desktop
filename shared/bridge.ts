@@ -21,10 +21,11 @@ declare global {
 export type ChannelName = keyof ChannelInputs;
 
 export const CHANNEL_NAMES: ChannelName[] = [
+  "external:open", "tags:setColor",
   "notes:list", "notes:get", "notes:create", "notes:update", "notes:move", "notes:moveToFolder",
   "notes:find", "notes:favorite", "notes:pin", "notes:delete", "notes:restore", "notes:purge",
   "notes:emptyTrash", "notebooks:list", "notebooks:create", "notebooks:rename",
-  "notebooks:delete", "notebooks:moveToStack", "stacks:list", "stacks:create", "stacks:rename", "stacks:delete", "folders:list", "folders:create", "folders:rename", "folders:move", "folders:delete", "tags:list", "tags:create", "tags:attach", "tags:detach",
+  "notebooks:delete", "folders:list", "folders:create", "folders:rename", "folders:move", "folders:delete", "tags:list", "tags:create", "tags:attach", "tags:detach",
   "counts:get", "theme:get", "theme:set", "attachments:list", "attachments:save",
   "attachments:delete", "attachments:open", "export:markdown", "import:markdown",
   "backup:save", "backup:restore", "dialog:save", "dialog:open", "app:meta", "attachments:jobs", "attachments:retry-job", "attachments:cancel-job", "attachments:reindex",

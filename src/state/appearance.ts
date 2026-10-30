@@ -4,6 +4,8 @@ export interface Appearance {
   accent: string | null;
   editorFont: "sans" | "serif" | "mono";
   editorSize: number;
+  editorZoom: number;
+  uiSize: number;
   lineHeight: number;
   paragraphGap: number;
   contentWidth: number;
@@ -21,6 +23,8 @@ export const DEFAULT_APPEARANCE: Appearance = {
   accent: null,
   editorFont: "sans",
   editorSize: 15.5,
+  editorZoom: 100,
+  uiSize: 13,
   lineHeight: 1.7,
   paragraphGap: 0.65,
   contentWidth: 900,
@@ -61,6 +65,8 @@ function load(): Appearance {
       accent: typeof raw.accent === "string" && /^#[0-9a-f]{6}$/i.test(raw.accent) ? raw.accent : null,
       editorFont: raw.editorFont === "serif" || raw.editorFont === "mono" ? raw.editorFont : "sans",
       editorSize: clamp(raw.editorSize, 13, 22, d.editorSize),
+      editorZoom: clamp(raw.editorZoom, 50, 200, d.editorZoom),
+      uiSize: clamp(raw.uiSize, 12, 16, d.uiSize),
       lineHeight: clamp(raw.lineHeight, 1.3, 2.2, d.lineHeight),
       paragraphGap: clamp(raw.paragraphGap, 0, 1.5, d.paragraphGap),
       contentWidth: clamp(raw.contentWidth, 320, 2400, d.contentWidth),
@@ -88,6 +94,8 @@ function apply(a: Appearance) {
   set("--accent-soft-strong", a.accent && `color-mix(in srgb, ${a.accent} 20%, var(--bg))`);
   s.setProperty("--editor-font", FONTS[a.editorFont]);
   s.setProperty("--editor-size", `${a.editorSize}px`);
+  s.setProperty("--editor-zoom", `${a.editorZoom / 100}`);
+  s.setProperty("--ui-size", `${a.uiSize}px`);
   s.setProperty("--editor-line", String(a.lineHeight));
   s.setProperty("--editor-gap", `${a.paragraphGap}em`);
   s.setProperty("--editor-width", a.fullWidth ? "none" : `${a.contentWidth + a.editorGutter * 2}px`);

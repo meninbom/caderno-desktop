@@ -61,7 +61,7 @@ page.on("console", (msg) => { if (msg.type() === "error") failures.push(msg.text
 
 const clickAction = async (name) => {
   const button = page.getByRole("button", { name, exact: true });
-  await button.locator("xpath=ancestor::div[contains(@class,'notebook-stack-row') or contains(@class,'folder-row')]").hover();
+  await button.locator("xpath=ancestor::div[contains(@class,'notebook-row') or contains(@class,'folder-row')]").hover();
   await button.click();
 };
 

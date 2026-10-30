@@ -8,7 +8,6 @@ import type {
   NoteFull,
   NoteMeta,
   Notebook,
-  NotebookStack,
   NoteFolder,
   NoteLinkTarget,
   SidebarCounts,
@@ -40,9 +39,9 @@ interface WebNote {
   createdAt: number;
   updatedAt: number;
 }
-interface WebNotebook { id: number; name: string; createdAt: number; stackId?: string | null }
+interface WebNotebook { id: number; name: string; createdAt: number }
 interface WebFolder { id: string; notebookId: number; name: string; sortOrder: number; createdAt: number; updatedAt: number }
-interface WebTag { id: number; name: string }
+interface WebTag { id: number; name: string; color?: string | null }
 interface WebAttachment { id: number; noteId: string; fileName: string; byteSize: number; dataBase64: string; createdAt: number }
 
 interface WebStore {
@@ -50,7 +49,6 @@ interface WebStore {
   theme: "light" | "dark";
   notes: WebNote[];
   notebooks: WebNotebook[];
-  stacks?: { id: string; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
   folders?: WebFolder[];
   tags: WebTag[];
   noteTags: { noteId: string; tagId: number }[];
@@ -103,7 +101,7 @@ function seedStore(): WebStore {
     notes: [welcome, market, meeting],
     notebooks: [nb1, nb2],
     folders: [],
-    tags: [{ id: 1, name: "ideias" }],
+    tags: [{ id: 1, name: "ideias", color: null }],
     noteTags: [{ noteId: meeting.id, tagId: 1 }],
     attachments: [],
   };
@@ -134,6 +132,8 @@ function pickFile(accept: string): Promise<File | null> {
 }
 
 export class WebClient implements CadernoClient {
+  async openExternal(_url: string): Promise<boolean> { return false; }
+  async setTagColor(id: number, color: string | null): Promise<boolean> { const tag=this.store.tags.find(t=>t.id===id); if(!tag)return false; tag.color=color; this.persist(); return true; }
   async listTasks():Promise<import('../../shared/ipc').Task[]>{throw new Error('Tarefas locais disponíveis no app desktop.');} async createTask():Promise<string>{throw new Error('Tarefas locais disponíveis no app desktop.');} async updateTask():Promise<boolean>{throw new Error('Tarefas locais disponíveis no app desktop.');} async deleteTask():Promise<boolean>{throw new Error('Tarefas locais disponíveis no app desktop.');}
   async listEvents():Promise<import('../../shared/ipc').CalendarEvent[]>{throw new Error('Calendário local disponível no app desktop.');} async createEvent():Promise<string>{throw new Error('Calendário local disponível no app desktop.');} async updateEvent():Promise<boolean>{throw new Error('Calendário local disponível no app desktop.');} async deleteEvent():Promise<boolean>{throw new Error('Calendário local disponível no app desktop.');}
   private store: WebStore;
@@ -175,7 +175,7 @@ export class WebClient implements CadernoClient {
       .map(nt => this.store.tags.find(t => t.id === nt.tagId))
       .filter((t): t is WebTag => Boolean(t))
       .sort((a, b) => a.name.localeCompare(b.name))
-      .map(t => ({ id: t.id, name: t.name }));
+      .map(t => ({ id: t.id, name: t.name, color: t.color ?? null }));
     return {
       id: n.id,
       notebookId: n.notebookId,
@@ -349,7 +349,6 @@ export class WebClient implements CadernoClient {
         name: nb.name,
         createdAt: nb.createdAt,
         noteCount: this.store.notes.filter(n => n.notebookId === nb.id && n.deletedAt === null).length,
-        stackId: nb.stackId ?? null,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -363,7 +362,7 @@ export class WebClient implements CadernoClient {
     const nb: WebNotebook = { id: this.nextNotebookId(), name, createdAt: Date.now() };
     this.store.notebooks.push(nb);
     this.persist();
-    return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount: 0, stackId: null };
+    return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount: 0 };
   }
 
   async renameNotebook(id: number, name: string): Promise<Notebook | null> {
@@ -373,13 +372,8 @@ export class WebClient implements CadernoClient {
     nb.name = name;
     this.persist();
     const noteCount = this.store.notes.filter(n => n.notebookId === id && n.deletedAt === null).length;
-      return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount, stackId: nb.stackId ?? null };
+      return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount };
   }
-  async moveNotebookToStack(notebookId: number, stackId: string | null): Promise<boolean> { const nb=this.store.notebooks.find(x=>x.id===notebookId); if(!nb) return false; nb.stackId=stackId; this.persist(); return true; }
-  async listStacks(): Promise<NotebookStack[]> { return (this.store.stacks??[]).map(s=>({ ...s, notebookCount:this.store.notebooks.filter(n=>n.stackId===s.id).length, noteCount:this.store.notes.filter(n=>n.deletedAt===null&&this.store.notebooks.some(b=>b.id===n.notebookId&&b.stackId===s.id)).length })); }
-  async createStack(name:string):Promise<NotebookStack|null>{if((this.store.stacks??[]).some(s=>s.name.toLowerCase()===name.toLowerCase()))return null;const now=Date.now();const id=crypto.randomUUID();(this.store.stacks??=[]).push({id,name,sortOrder:0,createdAt:now,updatedAt:now});this.persist();return (await this.listStacks()).find(s=>s.id===id)??null;}
-  async renameStack(id:string,name:string):Promise<NotebookStack|null>{const s=(this.store.stacks??[]).find(x=>x.id===id);if(!s||(this.store.stacks??[]).some(x=>x.id!==id&&x.name.toLowerCase()===name.toLowerCase()))return null;s.name=name;s.updatedAt=Date.now();this.persist();return (await this.listStacks()).find(x=>x.id===id)??null;}
-  async deleteStack(id:string):Promise<boolean>{const before=(this.store.stacks??[]).length;this.store.stacks=(this.store.stacks??[]).filter(x=>x.id!==id);this.store.notebooks.forEach(n=>{if(n.stackId===id)n.stackId=null});this.persist();return this.store.stacks.length<before;}
   async listFolders(): Promise<NoteFolder[]> {
     return (this.store.folders ?? []).map(folder => ({
       ...folder,
@@ -443,6 +437,7 @@ export class WebClient implements CadernoClient {
       .map(t => ({
         id: t.id,
         name: t.name,
+        color: t.color ?? null,
         noteCount: this.store.noteTags.filter(nt => nt.tagId === t.id && this.store.notes.find(n => n.id === nt.noteId && n.deletedAt === null)).length,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -459,7 +454,7 @@ export class WebClient implements CadernoClient {
     const t: WebTag = { id: this.nextTagId(), name };
     this.store.tags.push(t);
     this.persist();
-    return { id: t.id, name: t.name, noteCount: 0 };
+    return { id: t.id, name: t.name, color: t.color ?? null, noteCount: 0 };
   }
 
   async attachTag(noteId: string, tagId: number): Promise<boolean> {

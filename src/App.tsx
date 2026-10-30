@@ -190,7 +190,7 @@ function ClipperSettings({onClose}:{onClose:()=>void}) {
   const refresh=()=>client.clipperStatus().then(setStatus).catch(e=>setError(e.message));
   useEffect(()=>{void refresh();const timer=window.setInterval(()=>void refresh(),1000);return()=>window.clearInterval(timer);},[]);
   const run=async(fn:()=>Promise<unknown>)=>{setBusy(true);setError("");try{await fn();await refresh();}catch(e){setError(e instanceof Error?e.message:String(e));}finally{setBusy(false);}};
-  return <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}><section className="modal stack-dialog" role="dialog" aria-modal="true" aria-labelledby="clipper-title" onKeyDown={e=>{if(e.key==="Escape")onClose();}}>
+  return <div className="overlay" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}><section className="modal app-dialog" role="dialog" aria-modal="true" aria-labelledby="clipper-title" onKeyDown={e=>{if(e.key==="Escape")onClose();}}>
     <h3 id="clipper-title">Web Clipper</h3><p>Guarde páginas neste app. A conexão funciona só enquanto o Caderno estiver aberto.</p>
     <p role="status">{status.enabled?`Conexão local ativa em 127.0.0.1:${status.port}.`:"Conexão desativada."} {status.paired?"Extensão pareada.":"Extensão ainda não pareada."}</p>
     {!status.enabled&&<button disabled={busy} onClick={()=>void run(()=>client.enableClipper())}>Configurar Clipper</button>}

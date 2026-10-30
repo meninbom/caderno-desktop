@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from "vitest";
 import Database from "better-sqlite3";
 import { openDatabase } from "../electron/repo/db";
-import { NotesRepo, NotebooksRepo, NotebookStacksRepo, TagsRepo, CountsRepo, Meta, uuid,TasksRepo,EventsRepo,AttachmentJobsRepo,TranscriptionsRepo } from "../electron/repo/sqlite";
+import { NotesRepo, NotebooksRepo, TagsRepo, CountsRepo, Meta, uuid,TasksRepo,EventsRepo,AttachmentJobsRepo,TranscriptionsRepo } from "../electron/repo/sqlite";
 import { AttachmentsRepo, BackupRepo, inspectRaster } from "../electron/repo/attachments";
 import fs from "node:fs";
 import path from "node:path";
@@ -41,8 +41,8 @@ describe("Gestão de etiquetas", () => {
       expect(x.tags.create("AÇÃO COMERCIAL")).toBeNull();
       x.tags.attach(first.id, tag.id); x.tags.attach(second.id, tag.id);
       expect(x.tags.rename(tag.id, "  Prioridade  ")).toMatchObject({ id: tag.id, name: "Prioridade", noteCount: 2 });
-      expect(x.notes.get(first.id)?.tags).toEqual([{ id: tag.id, name: "Prioridade" }]);
-      expect(x.notes.get(second.id)?.tags).toEqual([{ id: tag.id, name: "Prioridade" }]);
+      expect(x.notes.get(first.id)?.tags).toEqual([{ id: tag.id, name: "Prioridade", color: null }]);
+      expect(x.notes.get(second.id)?.tags).toEqual([{ id: tag.id, name: "Prioridade", color: null }]);
       expect(x.notes.get(first.id)?.contentHtml).toBe("<p>Conteúdo intacto</p>");
       const other = x.tags.create("Outra")!;
       expect(x.tags.rename(tag.id, " OUTRA ")).toBeNull();
@@ -63,11 +63,24 @@ describe("Gestão de etiquetas", () => {
       expect(x.tags.list().find(t => t.id === tag.id)?.noteCount).toBe(1);
       expect(x.tags.remove(tag.id)).toBe(true);
       expect(x.tags.remove(tag.id)).toBe(false);
-      expect(x.notes.get(first.id)?.tags).toEqual([{ id: keep.id, name: keep.name }]);
+      expect(x.notes.get(first.id)?.tags).toEqual([{ id: keep.id, name: keep.name, color: null }]);
       expect(x.notes.get(second.id)?.tags).toEqual([]);
       expect(x.notes.get(second.id)?.contentHtml).toBe("<p>Também preservado</p>");
       expect(x.notes.get(second.id)?.deletedAt).not.toBeNull();
       expect(x.db.pragma("foreign_key_check")).toEqual([]);
+    } finally { x.db.close(); }
+  });
+
+  it("persiste e valida a cor da etiqueta", () => {
+    const x = fresh();
+    try {
+      const note = x.notes.create({ title: "Com cor" });
+      const tag = x.tags.create("Colorida")!;
+      x.tags.attach(note.id, tag.id);
+      expect(x.tags.setColor(tag.id, "#3b82f6")).toBe(true);
+      expect(x.tags.list().find(t => t.id === tag.id)?.color).toBe("#3b82f6");
+      expect(x.notes.get(note.id)?.tags).toEqual([{ id: tag.id, name: tag.name, color: "#3b82f6" }]);
+      expect(() => x.tags.setColor(tag.id, "url(javascript:alert(1))")).toThrow(/inválida/);
     } finally { x.db.close(); }
   });
 });
@@ -300,16 +313,11 @@ describe("BackupRepo", () => {
 
   it("faz backup e restaura preservando dados (roundtrip)", () => {
     const nb = r.notebooks.create("Backup NB");
-    const stack = new NotebookStacksRepo(r.db).create("Backup stack");
-    expect(stack).not.toBeNull();
-    expect(r.notebooks.moveToStack(nb!.id, stack!.id)).toBe(true);
     const n = r.notes.create({ notebookId: nb!.id, title: "Nota backup", contentHtml: "<p>conteúdo</p>" });
     const t = r.tags.create("importante");
     r.tags.attach(n.id, t!.id);
     const dump = r.backup.dump();
     expect(dump.app).toBe("caderno");
-    expect(dump.stacks?.some(s => s.id === stack!.id)).toBe(true);
-    expect(dump.notebooks.find(x => x.id === nb!.id)?.stackId).toBe(stack!.id);
 
     const second = fresh();
     const restore = second.backup.restore(JSON.stringify(dump));
@@ -322,8 +330,6 @@ describe("BackupRepo", () => {
     expect(restoredNote?.title).toBe("Nota backup");
     expect(restoredNote?.tags.some(tag => tag.name === "importante")).toBe(true);
     const restoredNotebook = second.notebooks.list().find(x => x.name === "Backup NB");
-    expect(restoredNotebook?.stackId).toBe(stack!.id);
-    expect(new NotebookStacksRepo(second.db).list().some(x => x.id === stack!.id)).toBe(true);
   });
 
   it("backup inválido não altera dados", () => {
@@ -391,25 +397,6 @@ describe("Raster asset validation",()=>{
   });
 });
 
-describe("Pilhas de cadernos", () => {
-  it("CRUD, movimento e exclusão preservam cadernos e notas", () => {
-    const x = fresh();
-    const notebook = x.notebooks.create("Com pilha");
-    const note = x.notes.create({ notebookId: notebook!.id, title: "Nota preservada" });
-    const stacks = new NotebookStacksRepo(x.db);
-    const stack = stacks.create("Projetos");
-    expect(stacks.create("projetos")).toBeNull();
-    expect(x.notebooks.moveToStack(notebook!.id, stack!.id)).toBe(true);
-    expect(stacks.list().find(s => s.id === stack!.id)?.noteCount).toBe(1);
-    expect(stacks.rename(stack!.id, "Arquivo")?.name).toBe("Arquivo");
-    expect(x.notebooks.moveToStack(notebook!.id, null)).toBe(true);
-    expect(stacks.delete(stack!.id)).toBe(true);
-    expect(x.notebooks.list().find(n => n.id === notebook!.id)?.name).toBe("Com pilha");
-    expect(x.notes.get(note.id)?.title).toBe("Nota preservada");
-    x.db.close();
-  });
-});
-
 describe("Migração idempotente", () => {
   it('migração v4 com colisão restaura snapshot consistente e anexos',()=>{const root=fs.mkdtempSync(path.join(os.tmpdir(),'caderno-v4-rollback-')),file=path.join(root,'caderno.sqlite'),assets=path.join(root,'attachments');fs.mkdirSync(assets);fs.writeFileSync(path.join(assets,'keep.bin'),'keep');const db=new Database(file);db.pragma('journal_mode=WAL');db.exec(`CREATE TABLE migration_log(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL);INSERT INTO migration_log VALUES(3,3);CREATE TABLE meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);CREATE TABLE notebooks(id INTEGER PRIMARY KEY,name TEXT,created_at INTEGER,updated_at INTEGER,stack_id TEXT,sort_order INTEGER);CREATE TABLE notes(id TEXT PRIMARY KEY,notebook_id INTEGER,title TEXT,content_html TEXT,content_text TEXT,favorited INTEGER,pinned INTEGER,deleted_at INTEGER,created_at INTEGER,updated_at INTEGER);CREATE TABLE tags(id INTEGER PRIMARY KEY,name TEXT);CREATE TABLE note_tags(note_id TEXT,tag_id INTEGER);CREATE TABLE attachments(id INTEGER PRIMARY KEY,note_id TEXT,file_name TEXT,stored_name TEXT,byte_size INTEGER,created_at INTEGER,mime_type TEXT,sha256 TEXT,kind TEXT);CREATE VIEW tasks AS SELECT 1 AS collision;INSERT INTO notes(id,title,created_at,updated_at) VALUES('00000000-0000-4000-8000-000000000055','Preservada',1,1);`);db.close();expect(()=>openDatabase({database:file,attachments:assets})).toThrow(/already exists/i);const restored=new Database(file);expect(restored.pragma('user_version')).toBeDefined();expect(restored.prepare('SELECT title FROM notes').get()).toEqual({title:'Preservada'});expect(restored.prepare("SELECT version FROM migration_log ORDER BY version DESC LIMIT 1").get()).toEqual({version:3});expect(restored.prepare("SELECT type FROM sqlite_master WHERE name='tasks'").get()).toEqual({type:'view'});restored.close();expect(fs.readFileSync(path.join(assets,'keep.bin'),'utf8')).toBe('keep');fs.rmSync(root,{recursive:true,force:true});});
   it("abre o mesmo banco duas vezes e reexecuta migrações sem duplicar", () => {
@@ -457,13 +444,13 @@ describe("Migração idempotente", () => {
     const db = new Database(file); db.pragma("journal_mode = WAL");
     db.exec(`CREATE TABLE migration_log(version INTEGER PRIMARY KEY,applied_at INTEGER NOT NULL); INSERT INTO migration_log VALUES(1,1);
       CREATE TABLE notebooks(id INTEGER PRIMARY KEY,name TEXT,created_at INTEGER,updated_at INTEGER);
+      CREATE VIEW notebook_stacks AS SELECT 'collision' AS id;
       INSERT INTO notebooks VALUES(77,'Rollback intacto',7,7);
-      CREATE VIEW notebook_stacks AS SELECT 'collision' AS id;`);
+      `);
     db.close();
     expect(() => openDatabase({ database: file, attachments: attachmentsDir })).toThrow(/already exists/i);
     const restored = new Database(file);
     expect(restored.prepare("SELECT id,name FROM notebooks WHERE id=77").get()).toEqual({ id: 77, name: "Rollback intacto" });
-    expect(restored.prepare("SELECT type FROM sqlite_master WHERE name='notebook_stacks'").get()).toEqual({ type: "view" });
     expect(restored.prepare("SELECT MAX(version) AS version FROM migration_log").get()).toEqual({ version: 1 });
     restored.close();
     expect(fs.existsSync(`${file}-wal`)).toBe(false);
