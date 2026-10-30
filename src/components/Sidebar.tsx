@@ -1,19 +1,24 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import {
   LayoutTemplate, Search, Book, Files, Star, Tag as TagIcon, Trash2, Plus,
   SunMedium, MoonStar, Settings, PanelLeftClose, ShieldCheck, Pencil, MoreHorizontal,
-  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, Folder, FolderPlus, FolderInput, Check,
+  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, FolderPlus, FolderInput, Check, StickyNote,
 } from "lucide-react";
+import type { NoteMeta } from "../../shared/ipc";
 import { useAppStore, Selection } from "../state/store";
 import { useDismissablePopover } from "../hooks/useDismissablePopover";
 import { client } from "../api/client";
 import { TagManager } from "./TagManager";
+import { beginSidebarDrag, canDrop, endSidebarDrag, readSidebarDrag, type DropTarget, type SidebarDrag } from "./sidebarDrag";
 
-function Item({ icon, label, count, active, onClick }: {
+function Item({ icon, label, count, active, onClick, draggable, onDragStart, onDragEnd }: {
   icon: React.ReactNode; label: string; count?: number; active: boolean; onClick: () => void;
+  draggable?: boolean;
+  onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void;
+  onDragEnd?: (event: React.DragEvent<HTMLButtonElement>) => void;
 }) {
   return (
-    <button data-menu-item className={active ? "active" : undefined} onClick={onClick}>
+    <button type="button" data-menu-item className={active ? "active" : undefined} title={label} draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onClick}>
       {icon}
       <span>{label}</span>
       {count !== undefined && <span className="count">{count}</span>}
@@ -66,12 +71,34 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [stacks, setStacks] = useState<Awaited<ReturnType<typeof client.listStacks>>>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
-  const [collapsedFolders, setCollapsedFolders] = useState<Record<number, boolean>>({});
+  const [closedNotebooks, setClosedNotebooks] = useState<Record<number, boolean>>({});
+  const [closedFolders, setClosedFolders] = useState<Record<string, boolean>>({});
+  const [treeNotes, setTreeNotes] = useState<NoteMeta[]>([]);
+  const [dropKey, setDropKey] = useState<string | null>(null);
+  const [draggingId, setDraggingId] = useState<string | null>(null);
+  const dragClick = useRef(false);
+  const expandTimer = useRef<number | null>(null);
+  const expandKey = useRef<string | null>(null);
   const [stackDialog, setStackDialog] = useState<{ action: "create" | "rename" | "duplicate"; id?: string; value: string } | null>(null);
   const [folderDialog, setFolderDialog] = useState<{ action: "create" | "rename"; notebookId: number; id?: string; value: string } | null>(null);
   const morePopover = useDismissablePopover(moreOpen, () => setMoreOpen(false));
   const refreshStacks = async () => setStacks(await client.listStacks());
   useEffect(() => { void refreshStacks(); }, []);
+  useEffect(() => () => { if (expandTimer.current !== null) window.clearTimeout(expandTimer.current); }, []);
+  const treeToken = [
+    state.counts.all,
+    state.counts.trash,
+    state.notebooks.map(nb => `${nb.id}:${nb.noteCount}`).join(","),
+    state.folders.map(folder => `${folder.id}:${folder.notebookId}:${folder.noteCount}:${folder.name}`).join(","),
+    state.openNote ? `${state.openNote.id}:${state.openNote.title}:${state.openNote.updatedAt}:${state.openNote.folderId}:${state.openNote.notebookId}` : "",
+  ].join("|");
+  useEffect(() => {
+    let cancel = false;
+    void client.listNotes({ view: "all", order: "title_asc" }).then(notes => {
+      if (!cancel) setTreeNotes(notes);
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, [treeToken]);
 
   const stackAction = async (action: "create" | "rename" | "duplicate" | "delete", id?: string, existingName?: string) => {
     if (action === "delete") {
@@ -107,7 +134,8 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
       : await client.createFolder(dialog.notebookId, name);
     if (!saved) { dispatch({ type: "error", message: `Já existe uma pasta com o nome "${name}" neste caderno.` }); return; }
     setFolderDialog(null);
-    setCollapsedFolders(v => ({ ...v, [dialog.notebookId]: false }));
+    setClosedNotebooks(v => ({ ...v, [dialog.notebookId]: false }));
+    if (dialog.action === "create") setClosedFolders(v => ({ ...v, [saved.id]: false }));
     await refreshMeta();
   };
 
@@ -165,31 +193,189 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
     await refreshNotes();
   };
 
+  const clearExpand = () => {
+    if (expandTimer.current !== null) window.clearTimeout(expandTimer.current);
+    expandTimer.current = null;
+    expandKey.current = null;
+  };
+  const scheduleExpand = (key: string, run: () => void) => {
+    if (expandKey.current === key) return;
+    if (expandTimer.current !== null) window.clearTimeout(expandTimer.current);
+    expandKey.current = key;
+    expandTimer.current = window.setTimeout(() => {
+      expandTimer.current = null;
+      expandKey.current = null;
+      run();
+    }, 600);
+  };
+  const finishDrag = (event: React.DragEvent<HTMLButtonElement>) => {
+    event.currentTarget.classList.remove("is-dragging");
+    setDraggingId(null);
+    setDropKey(null);
+    clearExpand();
+    endSidebarDrag();
+    window.setTimeout(() => { dragClick.current = false; }, 80);
+  };
+  const startNoteDrag = (event: React.DragEvent<HTMLButtonElement>, note: NoteMeta) => {
+    dragClick.current = true;
+    event.stopPropagation();
+    beginSidebarDrag({ kind: "note", id: note.id, notebookId: note.notebookId, folderId: note.folderId }, event.dataTransfer);
+    setDraggingId(note.id);
+    event.currentTarget.classList.add("is-dragging");
+  };
+  const startFolderDrag = (event: React.DragEvent<HTMLButtonElement>, folderId: string, notebookId: number) => {
+    dragClick.current = true;
+    event.stopPropagation();
+    beginSidebarDrag({ kind: "folder", id: folderId, notebookId }, event.dataTransfer);
+    setDraggingId(folderId);
+    event.currentTarget.classList.add("is-dragging");
+  };
+  const commitDrop = async (drag: SidebarDrag, target: DropTarget) => {
+    try {
+      if (drag.kind === "note") {
+        const moved = target.kind === "folder"
+          ? await client.moveNoteToFolder(drag.id, target.folderId)
+          : drag.notebookId === target.notebookId
+            ? await client.moveNoteToFolder(drag.id, null)
+            : await client.moveNote(drag.id, target.notebookId);
+        if (!moved) { dispatch({ type: "error", message: "Não foi possível mover a nota." }); return; }
+        if (state.openNoteId === drag.id) await openNote(drag.id);
+      } else {
+        if (target.kind !== "notebook") return;
+        const moved = await client.moveFolder(drag.id, target.notebookId);
+        if (!moved) { dispatch({ type: "error", message: "Não foi possível mover a pasta. O caderno de destino já tem uma pasta com esse nome." }); return; }
+        setClosedNotebooks(current => ({ ...current, [target.notebookId]: false }));
+        if (state.selection.kind === "folder" && state.selection.folderId === drag.id && state.selection.notebookId !== target.notebookId) {
+          dispatch({ type: "selection", selection: { kind: "folder", notebookId: target.notebookId, folderId: drag.id } });
+        }
+        if (state.openNote?.folderId === drag.id) await openNote(state.openNote.id);
+      }
+      await refreshMeta();
+      await refreshNotes();
+    } catch (err) {
+      dispatch({ type: "error", message: (err as Error).message });
+    }
+  };
+  const bindDrop = (key: string, target: DropTarget, expand?: () => void) => ({
+    onDragOver: (event: React.DragEvent<HTMLDivElement>) => {
+      event.stopPropagation();
+      const drag = readSidebarDrag();
+      if (!drag) return;
+      if (expand) scheduleExpand(key, expand);
+      if (!canDrop(drag, target)) {
+        event.dataTransfer.dropEffect = "none";
+        setDropKey(prev => prev === key ? null : prev);
+        return;
+      }
+      event.preventDefault();
+      event.dataTransfer.dropEffect = "move";
+      setDropKey(prev => prev === key ? prev : key);
+    },
+    onDragLeave: (event: React.DragEvent<HTMLDivElement>) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && event.currentTarget.contains(next)) return;
+      setDropKey(prev => prev === key ? null : prev);
+      if (expandKey.current === key) clearExpand();
+    },
+    onDrop: (event: React.DragEvent<HTMLDivElement>) => {
+      event.preventDefault();
+      event.stopPropagation();
+      const drag = readSidebarDrag();
+      setDropKey(null);
+      clearExpand();
+      if (!drag || !canDrop(drag, target)) return;
+      void commitDrop(drag, target);
+    },
+  });
+  const openTreeNote = (note: NoteMeta) => {
+    if (dragClick.current) { dragClick.current = false; return; }
+    onArea?.("notes");
+    const same = note.folderId
+      ? state.selection.kind === "folder" && state.selection.folderId === note.folderId
+      : note.notebookId
+        ? state.selection.kind === "notebook" && state.selection.notebookId === note.notebookId
+        : state.selection.kind === "unfiled";
+    if (!same) {
+      dispatch({
+        type: "selection",
+        selection: note.folderId && note.notebookId
+          ? { kind: "folder", notebookId: note.notebookId, folderId: note.folderId }
+          : note.notebookId
+            ? { kind: "notebook", notebookId: note.notebookId }
+            : { kind: "unfiled" },
+      });
+    }
+    void openNote(note.id);
+  };
+  const renderTreeNote = (note: NoteMeta) => (
+    <button
+      key={note.id}
+      type="button"
+      className={`tree-note ${state.openNoteId === note.id ? "active" : ""} ${draggingId === note.id ? "is-dragging" : ""}`}
+      draggable
+      title={note.title || "Sem título"}
+      onDragStart={event => startNoteDrag(event, note)}
+      onDragEnd={finishDrag}
+      onClick={() => openTreeNote(note)}
+    >
+      <StickyNote size={13} strokeWidth={1.8} />
+      <span>{note.title || "Sem título"}</span>
+    </button>
+  );
+
   const renderNotebook = (nb: (typeof state.notebooks)[number]) => {
     const active = state.selection.kind === "notebook" && state.selection.notebookId === nb.id;
     const folders = state.folders.filter(folder => folder.notebookId === nb.id);
-    const collapsedFolder = collapsedFolders[nb.id] === true;
-    return <div key={`nb-${nb.id}`} className="notebook-block">
-      <div className={`notebook-stack-row ${active ? "active" : ""}`}>
-      {folders.length > 0 && <button className="icon folder-toggle" title={collapsedFolder ? "Expandir pastas" : "Recolher pastas"} aria-label={`${collapsedFolder ? "Expandir" : "Recolher"} pastas de ${nb.name}`} onClick={() => setCollapsedFolders(v => ({ ...v, [nb.id]: !collapsedFolder }))}>{collapsedFolder ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button>}
+    const looseNotes = treeNotes.filter(note => note.notebookId === nb.id && !note.folderId);
+    const notebookClosed = closedNotebooks[nb.id] === true;
+    const hasChildren = folders.length > 0 || looseNotes.length > 0;
+    return <div
+      key={`nb-${nb.id}`}
+      className={`notebook-block ${dropKey === `notebook:${nb.id}` ? "drop-target" : ""}`}
+      {...bindDrop(`notebook:${nb.id}`, { kind: "notebook", notebookId: nb.id }, notebookClosed && hasChildren ? () => setClosedNotebooks(current => ({ ...current, [nb.id]: false })) : undefined)}
+    >
+      <div className={`notebook-stack-row tree-row ${active ? "active" : ""}`}>
+      {hasChildren ? <button type="button" className="tree-chevron" aria-expanded={!notebookClosed} title={notebookClosed ? "Expandir" : "Recolher"} aria-label={`${notebookClosed ? "Expandir" : "Recolher"}${folders.length > 0 ? " pastas de" : ""} ${nb.name}`} onClick={() => setClosedNotebooks(current => ({ ...current, [nb.id]: !notebookClosed }))}>{notebookClosed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button> : <span className="tree-chevron-spacer" aria-hidden="true" />}
       {renamingId === nb.id ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenamingId(null); }} onBlur={() => void commitRename()} style={{ width: "100%", padding: "4px 8px", fontSize: 12.5 }} /> : <Item icon={<Book size={15} />} label={nb.name} count={nb.noteCount} active={active} onClick={() => select({ kind: "notebook", notebookId: nb.id })} />}
       {renamingId !== nb.id && <span className="nb-actions">
-        <button className="icon" title="Nova pasta" aria-label={`Nova pasta em ${nb.name}`} onClick={() => setFolderDialog({ action: "create", notebookId: nb.id, value: "" })}><FolderPlus size={12} /></button>
+        <button type="button" className="icon" title="Nova pasta" aria-label={`Nova pasta em ${nb.name}`} onClick={() => setFolderDialog({ action: "create", notebookId: nb.id, value: "" })}><FolderPlus size={13} /></button>
         <StackMenu notebookName={nb.name} stackId={nb.stackId ?? null} stacks={stacks} onMove={async id => { await client.moveNotebookToStack(nb.id, id); await refreshMeta(); await refreshStacks(); }} />
-        <button className="icon" title="Renomear" aria-label={`Renomear ${nb.name}`} onClick={() => startRename(nb.id, nb.name)}><Pencil size={12} /></button>
-        <button className="icon" title="Excluir caderno" aria-label={`Excluir ${nb.name}`} onClick={() => void removeNotebook(nb.id)}><Trash2 size={12} /></button>
+        <button type="button" className="icon" title="Renomear" aria-label={`Renomear ${nb.name}`} onClick={() => startRename(nb.id, nb.name)}><Pencil size={13} /></button>
+        <button type="button" className="icon" title="Excluir caderno" aria-label={`Excluir ${nb.name}`} onClick={() => void removeNotebook(nb.id)}><Trash2 size={13} /></button>
       </span>}
       </div>
-      {!collapsedFolder && folders.length > 0 && <div className="folder-list">{folders.map(folder => {
-        const folderActive = state.selection.kind === "folder" && state.selection.folderId === folder.id;
-        return <div key={folder.id} className={`folder-row ${folderActive ? "active" : ""}`}>
-          <Item icon={<Folder size={14} />} label={folder.name} count={folder.noteCount} active={folderActive} onClick={() => select({ kind: "folder", notebookId: nb.id, folderId: folder.id })} />
-          <span className="nb-actions">
-            <button className="icon" title="Renomear pasta" aria-label={`Renomear pasta ${folder.name}`} onClick={() => setFolderDialog({ action: "rename", notebookId: nb.id, id: folder.id, value: folder.name })}><Pencil size={12} /></button>
-            <button className="icon" title="Excluir pasta" aria-label={`Excluir pasta ${folder.name}`} onClick={() => void removeFolder(folder.id, nb.id, folder.name)}><Trash2 size={12} /></button>
-          </span>
-        </div>;
-      })}</div>}
+      {!notebookClosed && hasChildren && <div className="tree-children">
+        {folders.map(folder => {
+          const folderActive = state.selection.kind === "folder" && state.selection.folderId === folder.id;
+          const notes = treeNotes.filter(note => note.folderId === folder.id);
+          const folderOpen = closedFolders[folder.id] === false;
+          return <div key={folder.id} className={`folder-block ${dropKey === `folder:${folder.id}` ? "drop-target" : ""}`} {...bindDrop(`folder:${folder.id}`, { kind: "folder", folderId: folder.id, notebookId: nb.id }, folderOpen ? undefined : () => setClosedFolders(current => ({ ...current, [folder.id]: false })))}>
+            <div className={`folder-row tree-row ${folderActive ? "active" : ""} ${draggingId === folder.id ? "is-dragging" : ""}`}>
+              <button type="button" className="tree-chevron" aria-expanded={folderOpen} title={folderOpen ? "Recolher pasta" : "Expandir pasta"} aria-label={`${folderOpen ? "Recolher" : "Expandir"} pasta ${folder.name}`} onClick={() => setClosedFolders(current => ({ ...current, [folder.id]: folderOpen }))}>{folderOpen ? <ChevronDown size={12} /> : <ChevronRight size={12} />}</button>
+              <Item
+                icon={folderOpen ? <FolderOpen size={15} /> : <Folder size={15} />}
+                label={folder.name}
+                count={folder.noteCount}
+                active={folderActive}
+                draggable
+                onDragStart={event => startFolderDrag(event, folder.id, nb.id)}
+                onDragEnd={finishDrag}
+                onClick={() => {
+                  if (dragClick.current) { dragClick.current = false; return; }
+                  setClosedFolders(current => ({ ...current, [folder.id]: false }));
+                  select({ kind: "folder", notebookId: nb.id, folderId: folder.id });
+                }}
+              />
+              <span className="nb-actions">
+                <button type="button" className="icon" title="Renomear pasta" aria-label={`Renomear pasta ${folder.name}`} onClick={() => setFolderDialog({ action: "rename", notebookId: nb.id, id: folder.id, value: folder.name })}><Pencil size={13} /></button>
+                <button type="button" className="icon" title="Excluir pasta" aria-label={`Excluir pasta ${folder.name}`} onClick={() => void removeFolder(folder.id, nb.id, folder.name)}><Trash2 size={13} /></button>
+              </span>
+            </div>
+            {folderOpen && notes.length > 0 && <div className="tree-children">{notes.map(renderTreeNote)}</div>}
+          </div>;
+        })}
+        {looseNotes.map(renderTreeNote)}
+      </div>}
     </div>;
   };
 

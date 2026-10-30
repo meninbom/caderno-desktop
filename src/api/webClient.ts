@@ -406,6 +406,21 @@ export class WebClient implements CadernoClient {
     this.persist();
     return (await this.listFolders()).find(item => item.id === id) ?? null;
   }
+  async moveFolder(id: string, notebookId: number): Promise<NoteFolder | null> {
+    const folder = (this.store.folders ?? []).find(item => item.id === id);
+    if (!folder) return null;
+    if (!this.store.notebooks.some(nb => nb.id === notebookId)) throw new Error("Caderno não encontrado.");
+    if (folder.notebookId === notebookId) return (await this.listFolders()).find(item => item.id === id) ?? null;
+    if ((this.store.folders ?? []).some(item => item.id !== id && item.notebookId === notebookId && item.name.toLowerCase() === folder.name.toLowerCase())) return null;
+    const sort = (this.store.folders ?? []).filter(item => item.notebookId === notebookId).reduce((max, item) => Math.max(max, item.sortOrder), -1) + 1;
+    const now = Date.now();
+    folder.notebookId = notebookId;
+    folder.sortOrder = sort;
+    folder.updatedAt = now;
+    for (const note of this.store.notes) if (note.folderId === id) { note.notebookId = notebookId; note.updatedAt = now; }
+    this.persist();
+    return (await this.listFolders()).find(item => item.id === id) ?? null;
+  }
   async deleteFolder(id: string): Promise<boolean> {
     const before = (this.store.folders ?? []).length;
     this.store.folders = (this.store.folders ?? []).filter(item => item.id !== id);

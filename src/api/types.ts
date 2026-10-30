@@ -63,6 +63,7 @@ export interface CadernoClient {
   listFolders(): Promise<NoteFolder[]>;
   createFolder(notebookId: number, name: string): Promise<NoteFolder | null>;
   renameFolder(id: string, name: string): Promise<NoteFolder | null>;
+  moveFolder(id: string, notebookId: number): Promise<NoteFolder | null>;
   deleteFolder(id: string): Promise<boolean>;
   listTags(): Promise<Tag[]>;
   createTag(name: string): Promise<Tag | null>;

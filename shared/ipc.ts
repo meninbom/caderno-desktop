@@ -102,6 +102,7 @@ export const MoveNoteInputSchema = z.object({ id: IdSchema, notebookId: z.number
 export const MoveNoteFolderInputSchema = z.object({ id: IdSchema, folderId: IdSchema.nullable() });
 export const CreateFolderInputSchema = z.object({ notebookId: z.number().int().positive(), name: z.string().trim().min(1).max(120) });
 export const RenameFolderInputSchema = z.object({ id: IdSchema, name: z.string().trim().min(1).max(120) });
+export const MoveFolderInputSchema = z.object({ id: IdSchema, notebookId: z.number().int().positive() });
 export const FlagInputSchema = z.object({ id: IdSchema, value: z.boolean() });
 
 export const CreateNotebookInputSchema = z.object({ name: z.string().min(1).max(120) });
@@ -210,6 +211,7 @@ export interface ChannelInputs {
   "folders:list": null;
   "folders:create": z.infer<typeof CreateFolderInputSchema>;
   "folders:rename": z.infer<typeof RenameFolderInputSchema>;
+  "folders:move": z.infer<typeof MoveFolderInputSchema>;
   "folders:delete": z.infer<typeof StackIdInputSchema>;
   "tags:list": null;
   "tags:create": z.infer<typeof CreateTagInputSchema>;

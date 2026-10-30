@@ -585,7 +585,9 @@ try {
     await page.getByRole('alert').filter({ hasText: 'Já existe' }).waitFor();
     const nb = (await invoke('notebooks:list')).find(x => x.name === 'Projetos QA'); assert.ok(nb);
     await page.getByLabel('Caderno da nota').selectOption(String(nb.id));
-    await page.getByRole('button', { name: /^Projetos QA(?: \d+)?$/ }).click(); await page.getByRole('button', { name: 'Renomear Projetos QA', exact: true }).click();
+    await page.getByRole('button', { name: /^Projetos QA(?: \d+)?$/ }).click();
+    await page.locator('.notebook-stack-row').filter({ hasText: 'Projetos QA' }).hover();
+    await page.getByRole('button', { name: 'Renomear Projetos QA', exact: true }).click();
     const rename = page.locator('.sidebar input').last(); await rename.fill('Projetos QA 2'); await rename.press('Enter');
     const renamed = (await invoke('notebooks:list')).find(x => x.name === 'Projetos QA 2'); assert.ok(renamed);
     await page.getByRole('button', { name: /^Projetos QA 2(?: \d+)?$/ }).click(); await openTitle('Funcional 001');
@@ -596,7 +598,9 @@ try {
     await page.locator('.sidebar').getByRole('button', { name: /qa-flow/ }).click(); assert.ok((await noteRows().count()) >= 1);
     await openTitle('Funcional 001');
     await page.getByRole('button', { name: 'Etiquetas', exact: true }).click(); await page.getByRole('button', { name: 'Remover etiqueta qa-flow desta nota', exact: true }).click();
-    await page.getByRole('button', { name: /^Projetos QA 2(?: \d+)?$/ }).click(); await page.getByRole('button', { name: 'Excluir Projetos QA 2', exact: true }).click();
+    await page.getByRole('button', { name: /^Projetos QA 2(?: \d+)?$/ }).click();
+    await page.locator('.notebook-stack-row').filter({ hasText: 'Projetos QA 2' }).hover();
+    await page.getByRole('button', { name: 'Excluir Projetos QA 2', exact: true }).click();
     assert.equal((await invoke('notebooks:list')).some(x => x.id === renamed.id), false);
     assert.ok(tagId > 0);
   });

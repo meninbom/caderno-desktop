@@ -97,6 +97,26 @@ describe("pastas de notas", () => {
     expect(() => r.notes.create({ notebookId: work.id, folderId: inbox.id })).toThrow(/não pertence/);
   });
 
+  it("move a pasta para outro caderno e leva as notas", () => {
+    const r = fresh();
+    const home = r.notebooks.create("Pessoal")!;
+    const work = r.notebooks.create("Trabalho")!;
+    const recipes = r.folders.create(home.id, "Receitas")!;
+    const clash = r.folders.create(work.id, "Receitas")!;
+    const note = r.notes.create({ notebookId: home.id, folderId: recipes.id, title: "Bolo" });
+    const trashed = r.notes.create({ notebookId: home.id, folderId: recipes.id, title: "Rascunho" });
+    r.notes.softDelete(trashed.id);
+    expect(r.folders.move(recipes.id, home.id)?.notebookId).toBe(home.id);
+    expect(r.folders.move(recipes.id, work.id)).toBeNull();
+    expect(r.notes.get(note.id)).toMatchObject({ notebookId: home.id, folderId: recipes.id });
+    expect(r.folders.move("00000000-0000-4000-8000-000000000000", work.id)).toBeNull();
+    r.folders.delete(clash.id);
+    expect(r.folders.move(recipes.id, work.id)).toMatchObject({ notebookId: work.id, name: "Receitas" });
+    expect(r.notes.get(note.id)).toMatchObject({ notebookId: work.id, folderId: recipes.id });
+    expect(r.notes.get(trashed.id)).toMatchObject({ notebookId: work.id, folderId: recipes.id, deletedAt: expect.any(Number) });
+    expect(() => r.folders.move(recipes.id, 999)).toThrow(/Caderno não encontrado/);
+  });
+
   it("excluir o caderno remove as pastas e preserva as notas sem vínculo", () => {
     const r = fresh();
     const notebook = r.notebooks.create("Pessoal")!;
@@ -153,6 +173,8 @@ describe("pastas de notas", () => {
     expect(validateInput("folders:create", { notebookId: 1, name: " Receitas " }).ok).toBe(true);
     expect(validateInput("folders:create", { notebookId: 1, name: "   " }).ok).toBe(false);
     expect(validateInput("folders:rename", { id, name: "Arquivo" }).ok).toBe(true);
+    expect(validateInput("folders:move", { id, notebookId: 2 }).ok).toBe(true);
+    expect(validateInput("folders:move", { id, notebookId: 0 }).ok).toBe(false);
     expect(validateInput("folders:delete", { id }).ok).toBe(true);
     expect(validateInput("notes:moveToFolder", { id, folderId: null }).ok).toBe(true);
     expect(validateInput("notes:moveToFolder", { id, folderId: id }).ok).toBe(true);
@@ -175,7 +197,15 @@ describe("pastas no preview web", () => {
     const other = (await client.listNotebooks()).find(item => item.name === "Trabalho")!;
     const work = (await client.createFolder(other.id, "Compras"))!;
     expect(await client.moveNoteToFolder(note.id, work.id)).toMatchObject({ notebookId: other.id, folderId: work.id });
+    const carried = await client.createFolder(notebook.id, "Levar");
+    const carriedNote = await client.createNote({ notebookId: notebook.id, folderId: carried!.id, title: "Vai junto" });
+    expect(await client.moveFolder(carried!.id, notebook.id)).toMatchObject({ notebookId: notebook.id });
+    const clash = await client.createFolder(other.id, "Levar");
+    expect(await client.moveFolder(carried!.id, other.id)).toBeNull();
+    expect(await client.deleteFolder(clash!.id)).toBe(true);
     expect(await client.deleteFolder(work.id)).toBe(true);
+    expect(await client.moveFolder(carried!.id, other.id)).toMatchObject({ notebookId: other.id, name: "Levar" });
+    expect(await client.getNote(carriedNote.id)).toMatchObject({ notebookId: other.id, folderId: carried!.id });
     expect(await client.getNote(note.id)).toMatchObject({ title: "Lista", notebookId: other.id, folderId: null });
     expect((await client.listFolders()).some(item => item.id === work.id)).toBe(false);
   });

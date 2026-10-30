@@ -99,6 +99,7 @@ export class DesktopClient implements CadernoClient {
   listFolders(): Promise<import("../../shared/ipc").NoteFolder[]> { return this.call("folders:list", null) as Promise<import("../../shared/ipc").NoteFolder[]>; }
   createFolder(notebookId: number, name: string): Promise<import("../../shared/ipc").NoteFolder | null> { return this.call("folders:create", { notebookId, name }) as Promise<import("../../shared/ipc").NoteFolder | null>; }
   renameFolder(id: string, name: string): Promise<import("../../shared/ipc").NoteFolder | null> { return this.call("folders:rename", { id, name }) as Promise<import("../../shared/ipc").NoteFolder | null>; }
+  moveFolder(id: string, notebookId: number): Promise<import("../../shared/ipc").NoteFolder | null> { return this.call("folders:move", { id, notebookId }) as Promise<import("../../shared/ipc").NoteFolder | null>; }
   deleteFolder(id: string): Promise<boolean> { return this.call("folders:delete", { id }) as Promise<boolean>; }
   listTags(): Promise<Tag[]> {
     return this.call("tags:list", null) as Promise<Tag[]>;

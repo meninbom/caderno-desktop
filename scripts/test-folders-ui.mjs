@@ -18,7 +18,8 @@ const compiled = spawnSync(process.execPath, ["scripts/build-electron.mjs"], { c
 if (compiled.status !== 0) process.exit(compiled.status ?? 1);
 let viteChild = null;
 if (!(await viteUp())) {
-  viteChild = spawn(process.execPath, [require.resolve("vite/bin/vite.js")], { cwd: root, stdio: "inherit" });
+  const viteBin = path.join(root, "node_modules", "vite", "bin", "vite.js");
+  viteChild = spawn(process.execPath, [viteBin], { cwd: root, stdio: "inherit" });
   const deadline = Date.now() + 30000;
   while (Date.now() < deadline && !(await viteUp())) {
     if (viteChild.exitCode !== null) throw new Error("O Vite encerrou antes de responder em localhost:5173.");
@@ -185,8 +186,12 @@ const invoke = (channel, input = null) => page.evaluate(async ({ channel, input 
   console.log("PASS folders-ui");
   console.log("PROFILE", userData);
 } catch (error) {
-  await shot("fail.png").catch(() => {});
   console.error("FAIL", error);
+  if (page) {
+    const file = path.join(shots, "fail.png");
+    await page.screenshot({ path: file }).catch(() => {});
+    console.log("SHOT", file);
+  }
   console.log("PROFILE", userData);
   process.exitCode = 1;
 } finally {

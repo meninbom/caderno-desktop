@@ -1,7 +1,8 @@
-import React, { useMemo, useEffect, useState } from "react";
+import React, { useMemo, useEffect, useRef, useState } from "react";
 import { Star, Pin, StickyNote, Search, SlidersHorizontal, ChevronDown, X, PanelLeftClose } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { client } from "../api/client";
+import { beginSidebarDrag, endSidebarDrag } from "./sidebarDrag";
 
 function fmtDate(ts: number): string {
   const d = new Date(ts);
@@ -41,6 +42,8 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
   const filterValue=(key:string)=>{const m=new RegExp(`(?:^|\\s)${key}:(?:"((?:\\\\.|[^"])*)"|(\\S+))`,'i').exec(state.search);return(m?.[1]??m?.[2]??"").replace(/\\([\\"])/g,"$1")};
 
   const [filtersOpen, setFiltersOpen] = useState(false);
+  const [draggingNoteId, setDraggingNoteId] = useState<string | null>(null);
+  const dragClick = useRef(false);
   const activeFilters = FILTER_KEYS.map(key => ({ key, value: filterValue(key) })).filter(f => f.value);
   const clearFilters = () => {
     const tokens = (state.search.match(/(?:[^\s"]+|"(?:\\.|[^"])*")+/g) ?? []).filter(t => !/^(notebook|tag|before|after|type):/i.test(t));
@@ -225,8 +228,22 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
             {state.notes.map((n) => (
               <button
                 key={n.id}
-                className={`note-row ${state.openNoteId === n.id ? "selected" : ""}`}
-                onClick={() => void openResult(n)}
+                className={`note-row ${state.openNoteId === n.id ? "selected" : ""} ${draggingNoteId === n.id ? "is-dragging" : ""}`}
+                draggable={selectionKey !== "trash" && !n.deletedAt}
+                onDragStart={(event) => {
+                  if (selectionKey === "trash" || n.deletedAt) { event.preventDefault(); return; }
+                  dragClick.current = true;
+                  beginSidebarDrag({ kind: "note", id: n.id, notebookId: n.notebookId, folderId: n.folderId }, event.dataTransfer);
+                  setDraggingNoteId(n.id);
+                  event.currentTarget.classList.add("is-dragging");
+                }}
+                onDragEnd={(event) => {
+                  event.currentTarget.classList.remove("is-dragging");
+                  setDraggingNoteId(null);
+                  endSidebarDrag();
+                  window.setTimeout(() => { dragClick.current = false; }, 80);
+                }}
+                onClick={() => { if (dragClick.current) { dragClick.current = false; return; } void openResult(n); }}
               >
                 <span className="row-title">
                   <span className="tt">{n.title ? n.title : <em style={{ color: "var(--text-faint)", fontWeight: 400 }}>Sem título</em>}</span>

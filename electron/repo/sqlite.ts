@@ -486,6 +486,25 @@ export class NoteFoldersRepo {
     return this.list().find(x => x.id === id) ?? null;
   }
   delete(id: string): boolean { return this.db.prepare("DELETE FROM note_folders WHERE id=?").run(id).changes > 0; }
+  /** Move a pasta para outro caderno e leva as notas junto. Nome repetido no destino não altera nada. */
+  move(id: string, notebookId: number): NoteFolder | null {
+    const folder = this.db.prepare("SELECT id, notebook_id AS notebookId FROM note_folders WHERE id=?").get(id) as { id: string; notebookId: number } | undefined;
+    if (!folder) return null;
+    if (folder.notebookId === notebookId) return this.list().find(item => item.id === id) ?? null;
+    if (!this.db.prepare("SELECT 1 FROM notebooks WHERE id=?").get(notebookId)) throw new Error("Caderno não encontrado.");
+    const sort = ((this.db.prepare("SELECT COALESCE(MAX(sort_order), -1) AS m FROM note_folders WHERE notebook_id=?").get(notebookId) as { m: number } | undefined)?.m ?? -1) + 1;
+    const now = Date.now();
+    try {
+      this.db.transaction(() => {
+        this.db.prepare("UPDATE note_folders SET notebook_id=?, sort_order=?, updated_at=? WHERE id=?").run(notebookId, sort, now, id);
+        this.db.prepare("UPDATE notes SET notebook_id=?, updated_at=? WHERE folder_id=?").run(notebookId, now, id);
+      })();
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("UNIQUE")) return null;
+      throw e;
+    }
+    return this.list().find(item => item.id === id) ?? null;
+  }
 }
 
 export class TagsRepo {

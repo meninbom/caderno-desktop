@@ -375,6 +375,7 @@ function registerHandlers(): void {
     "folders:list": () => repos.folders.list(),
     "folders:create": (input) => repos.folders.create(input.notebookId, input.name),
     "folders:rename": (input) => repos.folders.rename(input.id, input.name),
+    "folders:move": (input) => repos.folders.move(input.id, input.notebookId),
     "folders:delete": (input) => repos.folders.delete(input.id),
     "tags:list": () => repos.tags.list(),
     "tags:create": (input) => repos.tags.create(input.name),
