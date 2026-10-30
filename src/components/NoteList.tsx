@@ -52,12 +52,18 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
       const nb = state.notebooks.find(x => x.id === (state.selection as { notebookId: number }).notebookId);
       return nb?.name ?? "Caderno";
     }
+    if (selectionKey === "folder") {
+      const sel = state.selection as { notebookId: number; folderId: string };
+      const nb = state.notebooks.find(x => x.id === sel.notebookId);
+      const folder = state.folders.find(x => x.id === sel.folderId);
+      return `${nb?.name ?? "Caderno"} / ${folder?.name ?? "Pasta"}`;
+    }
     if (selectionKey === "tag") {
       const t = state.tags.find(x => x.id === (state.selection as { tagId: number }).tagId);
       return `#${t?.name ?? ""}`;
     }
     return VIEW_TITLES[selectionKey] ?? "Notas";
-  }, [state.notebooks, state.tags, state.selection, selectionKey]);
+  }, [state.notebooks, state.folders, state.tags, state.selection, selectionKey]);
 
   const toggleFavorite = async (noteId: string, current: boolean) => {
     const updated = await client.setFavorite(noteId, !current);
@@ -209,7 +215,9 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
                 ? filterValue("type")==="transcription" ? "Nenhuma transcrição indexada/configurada. Captura e transcrição pertencem à etapa 4." : filterValue("type")==="attachment" ? "Nenhum texto de anexo indexado corresponde à busca. Confira o estado da indexação em Configurações." : "Nenhuma nota ou anexo corresponde à busca."
                 : selectionKey === "trash"
                   ? "A lixeira está vazia."
-                  : "Nenhuma nota por aqui ainda."}
+                  : selectionKey === "folder"
+                    ? "Nenhuma nota nesta pasta."
+                    : "Nenhuma nota por aqui ainda."}
             </span>
           </div>
         ) : (
@@ -231,6 +239,7 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
                 {(n.matchSnippet||n.preview) && <span className="row-preview">{n.matchSnippet||n.preview}</span>}
                 <span className="row-meta">
                   <span>{fmtDate(n.updatedAt)}</span>
+                  {n.folderId && state.selection.kind !== "folder" && <span className="meta-tag">{state.folders.find(folder => folder.id === n.folderId)?.name}</span>}
                   {n.tags.length > 0 && (
                     <span className="meta-tags">
                       {n.tags.slice(0, 3).map((t) => (

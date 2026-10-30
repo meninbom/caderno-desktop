@@ -67,12 +67,12 @@ export function App() {
     })().catch(error => dispatch({ type: "error", message: `Não foi possível abrir a nota solicitada: ${(error as Error).message}` }));
   }), [area, state.openNote, dispatch, openNote]);
 
-  const importMarkdown = async (files: FileList | null, notebookId: number | null) => {
+  const importMarkdown = async (files: FileList | null, notebookId: number | null, folderId?: string | null) => {
     if (!files || files.length === 0) return;
     try {
       const items: { fileName: string; content: string }[] = [];
       for (const f of Array.from(files)) items.push({ fileName: f.name, content: await f.text() });
-      const result = await client.importMarkdown(items, notebookId);
+      const result = await client.importMarkdown(items, notebookId, folderId);
       setToast(`${result.created} nota(s) importada(s) de Markdown.`);
       await refreshMeta();
       await refreshNotes();
@@ -106,10 +106,10 @@ export function App() {
     }
   };
 
-  const importEml = async () => {try{const notebookId=state.selection.kind==='notebook'?state.selection.notebookId:null;const result=await client.importEml(notebookId);if(result.canceled)return;setToast(`${result.created} e-mail(s) importado(s), ${result.duplicates} duplicado(s), ${result.attachments} anexo(s).${result.errors.length?` Falhas: ${result.errors.join(' | ')}`:''}`);await refreshMeta();await refreshNotes();}catch(err){setToast(`Falha na importação: ${(err as Error).message}`);}};
+  const importEml = async () => {try{const notebookId=state.selection.kind==='notebook'||state.selection.kind==='folder'?state.selection.notebookId:null;const folderId=state.selection.kind==='folder'?state.selection.folderId:undefined;const result=await client.importEml(notebookId, folderId);if(result.canceled)return;setToast(`${result.created} e-mail(s) importado(s), ${result.duplicates} duplicado(s), ${result.attachments} anexo(s).${result.errors.length?` Falhas: ${result.errors.join(' | ')}`:''}`);await refreshMeta();await refreshNotes();}catch(err){setToast(`Falha na importação: ${(err as Error).message}`);}};
 
   const commands:PaletteCommand[]=[
-    {id:'create-note',title:'Criar nota',description:'Começar uma nova nota',keywords:'nova escrever',run:async()=>{const note=await client.createNote(state.selection.kind==='notebook'?{notebookId:state.selection.notebookId}:{});dispatch({type:'selection',selection:{kind:'all'}});dispatch({type:'search',value:''});setArea('notes');await refreshMeta();await refreshNotes();await openNote(note.id)}},
+    {id:'create-note',title:'Criar nota',description:'Começar uma nova nota',keywords:'nova escrever',run:async()=>{const sel=state.selection;const note=await client.createNote(sel.kind==='folder'?{notebookId:sel.notebookId,folderId:sel.folderId}:sel.kind==='notebook'?{notebookId:sel.notebookId}:{});dispatch({type:'selection',selection:{kind:'all'}});dispatch({type:'search',value:''});setArea('notes');await refreshMeta();await refreshNotes();await openNote(note.id)}},
     {id:'new-from-template',title:'Nova nota a partir de modelo',description:'Escolher um modelo, ver a prévia e criar uma nota',keywords:'modelos template ata reunião projeto',run:()=>{setArea('notes');setTemplatesOpen(true)}},
     {id:'save-template',title:'Salvar nota como modelo',description:'Guardar o conteúdo atual como modelo reutilizável',keywords:'template',run:()=>{if(!state.openNote||state.openNote.deletedAt!==null)throw new Error('Abra uma nota para salvá-la como modelo.');window.dispatchEvent(new Event('caderno:save-template'))}},
     {id:'reference-note',title:'Abrir nota de referência ao lado',description:'Consultar outra nota somente leitura ao lado da principal',keywords:'lado a lado dividir painel',run:()=>{if(!state.openNote)throw new Error('Abra uma nota principal primeiro.');window.dispatchEvent(new Event('caderno:pick-reference'))}},
@@ -149,8 +149,9 @@ export function App() {
         hidden
         onChange={(e) => {
           const sel = state.selection;
-          const notebookId = sel.kind === "notebook" ? sel.notebookId : null;
-          void importMarkdown(e.target.files, notebookId);
+          const notebookId = sel.kind === "notebook" || sel.kind === "folder" ? sel.notebookId : null;
+          const folderId = sel.kind === "folder" ? sel.folderId : undefined;
+          void importMarkdown(e.target.files, notebookId, folderId);
           e.target.value = "";
         }}
       />
@@ -177,7 +178,7 @@ export function App() {
       {quickTask&&<TaskDialog initialNoteId={state.openNote?.deletedAt?null:state.openNoteId} onClose={()=>setQuickTask(false)} onSaved={agendaSaved}/>}
       {quickEvent&&<EventDialog onClose={()=>setQuickEvent(false)} onSaved={agendaSaved}/>}
       {tagsOpen&&<TagManager onClose={()=>setTagsOpen(false)}/>}
-      {templatesOpen&&<TemplatePickerDialog notebookId={state.selection.kind==='notebook'?state.selection.notebookId:null} onClose={()=>setTemplatesOpen(false)} onCreated={async id=>{if(state.selection.kind==='trash')dispatch({type:'selection',selection:{kind:'all'}});await refreshMeta();await refreshNotes();await openNote(id)}}/>}
+      {templatesOpen&&<TemplatePickerDialog notebookId={state.selection.kind==='notebook'||state.selection.kind==='folder'?state.selection.notebookId:null} folderId={state.selection.kind==='folder'?state.selection.folderId:null} onClose={()=>setTemplatesOpen(false)} onCreated={async id=>{if(state.selection.kind==='trash')dispatch({type:'selection',selection:{kind:'all'}});await refreshMeta();await refreshNotes();await openNote(id)}}/>}
       {clipperOpen && <ClipperSettings onClose={()=>setClipperOpen(false)} />}
     </div>
   );

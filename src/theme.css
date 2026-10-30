@@ -207,13 +207,18 @@ input:focus { border-color: var(--accent); outline: none; }
 .stack-toggle { min-width: 0; flex: 1; padding: 4px; gap: 5px; color: var(--text-muted); text-align: left; }
 .stack-toggle span { overflow: hidden; text-overflow: ellipsis; }
 .stack-toggle small { color: var(--text-faint); margin-left: auto; }
-.notebook-stack-row { position: relative; }
+.notebook-stack-row, .folder-row { position: relative; display: flex; align-items: center; min-width: 0; }
+.notebook-stack-row > [data-menu-item], .folder-row > [data-menu-item] { flex: 1; min-width: 0; width: auto; }
 .notebook-stack-row:has(.stack-menu) { z-index: 41; }
 .nb-actions:has(.stack-menu) { opacity: 1; pointer-events: auto; }
-.nb-actions { position: absolute; right: 3px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 1px; padding-left: 4px; opacity: 0; pointer-events: none; border-radius: var(--radius); background: var(--surface-2); }
-.notebook-stack-row.active .nb-actions { background: var(--surface); }
-.notebook-stack-row:hover .nb-actions, .notebook-stack-row:focus-within .nb-actions { opacity: 1; pointer-events: auto; }
-.notebook-stack-row:hover [data-menu-item] .count, .notebook-stack-row:focus-within [data-menu-item] .count { opacity: 0; }
+.nb-actions { position: absolute; z-index: 2; right: 3px; top: 50%; transform: translateY(-50%); display: flex; align-items: center; gap: 1px; padding-left: 4px; opacity: 0; pointer-events: none; border-radius: var(--radius); background: var(--surface-2); }
+.notebook-stack-row.active .nb-actions, .folder-row.active .nb-actions { background: var(--surface); }
+.notebook-stack-row:hover .nb-actions, .notebook-stack-row:focus-within .nb-actions,
+.folder-row:hover .nb-actions, .folder-row:focus-within .nb-actions { opacity: 1; pointer-events: auto; }
+.notebook-stack-row:hover [data-menu-item] .count, .notebook-stack-row:focus-within [data-menu-item] .count,
+.folder-row:hover [data-menu-item] .count, .folder-row:focus-within [data-menu-item] .count { opacity: 0; }
+.folder-list { margin-left: 16px; }
+.folder-toggle { flex: 0 0 auto; padding: 4px 2px; color: var(--text-faint); }
 .nb-actions .icon { display: inline-flex; padding: 4px; color: var(--text-faint); border-radius: 4px; }
 .nb-actions .icon:hover, .nb-actions .icon[aria-expanded="true"] { color: var(--text); background: var(--border-soft); }
 .nb-stack-anchor { display: inline-flex; }

@@ -58,6 +58,9 @@ export class DesktopClient implements CadernoClient {
   moveNote(id: string, notebookId: number | null): Promise<NoteFull | null> {
     return this.call("notes:move", { id, notebookId }) as Promise<NoteFull | null>;
   }
+  moveNoteToFolder(id: string, folderId: string | null): Promise<NoteFull | null> {
+    return this.call("notes:moveToFolder", { id, folderId }) as Promise<NoteFull | null>;
+  }
   setFavorite(id: string, value: boolean): Promise<NoteFull | null> {
     return this.call("notes:favorite", { id, value }) as Promise<NoteFull | null>;
   }
@@ -93,6 +96,10 @@ export class DesktopClient implements CadernoClient {
   createStack(name: string): Promise<NotebookStack | null> { return this.call("stacks:create", { name }) as Promise<NotebookStack | null>; }
   renameStack(id: string, name: string): Promise<NotebookStack | null> { return this.call("stacks:rename", { id, name }) as Promise<NotebookStack | null>; }
   deleteStack(id: string): Promise<boolean> { return this.call("stacks:delete", { id }) as Promise<boolean>; }
+  listFolders(): Promise<import("../../shared/ipc").NoteFolder[]> { return this.call("folders:list", null) as Promise<import("../../shared/ipc").NoteFolder[]>; }
+  createFolder(notebookId: number, name: string): Promise<import("../../shared/ipc").NoteFolder | null> { return this.call("folders:create", { notebookId, name }) as Promise<import("../../shared/ipc").NoteFolder | null>; }
+  renameFolder(id: string, name: string): Promise<import("../../shared/ipc").NoteFolder | null> { return this.call("folders:rename", { id, name }) as Promise<import("../../shared/ipc").NoteFolder | null>; }
+  deleteFolder(id: string): Promise<boolean> { return this.call("folders:delete", { id }) as Promise<boolean>; }
   listTags(): Promise<Tag[]> {
     return this.call("tags:list", null) as Promise<Tag[]>;
   }
@@ -141,10 +148,10 @@ export class DesktopClient implements CadernoClient {
   exportMarkdown(noteId: string): Promise<{ canceled?: boolean; filePath?: string } | null> {
     return this.call("export:markdown", { noteId }) as Promise<{ canceled?: boolean; filePath?: string } | null>;
   }
-  importMarkdown(items: { fileName: string; content: string }[], notebookId: number | null): Promise<{ created: number }> {
-    return this.call("import:markdown", { items, notebookId }) as Promise<{ created: number }>;
+  importMarkdown(items: { fileName: string; content: string }[], notebookId: number | null, folderId?: string | null): Promise<{ created: number }> {
+    return this.call("import:markdown", { items, notebookId, ...(folderId ? { folderId } : {}) }) as Promise<{ created: number }>;
   }
-  importEml(notebookId:number|null){return this.call("import:eml",{notebookId}) as Promise<{canceled?:boolean;created:number;duplicates:number;attachments:number;errors:string[]}>;}
+  importEml(notebookId:number|null, folderId?: string | null){return this.call("import:eml",{notebookId, ...(folderId ? { folderId } : {})}) as Promise<{canceled?:boolean;created:number;duplicates:number;attachments:number;errors:string[]}>;}
   saveBackup(): Promise<{ canceled?: boolean; filePath?: string } | null> {
     return this.call("backup:save", null) as Promise<{ canceled?: boolean; filePath?: string } | null>;
   }
@@ -163,7 +170,7 @@ export class DesktopClient implements CadernoClient {
   createTemplateFromNote(x:{noteId:string;name:string;description?:string;noteTitle?:string}):Promise<TemplateSaveResult>{return this.call("templates:create-from-note",{description:"",...x}) as Promise<TemplateSaveResult>}
   updateTemplate(x:{id:string;name?:string;description?:string;noteTitle?:string}):Promise<NoteTemplateMeta|null>{return this.call("templates:update",x) as Promise<NoteTemplateMeta|null>}
   deleteTemplate(id:string):Promise<boolean>{return this.call("templates:delete",{id}) as Promise<boolean>}
-  applyTemplate(id:string,notebookId:number|null=null):Promise<NoteFull|null>{return this.call("templates:apply",{id,notebookId}) as Promise<NoteFull|null>}
+  applyTemplate(id:string,notebookId:number|null=null,folderId?:string|null):Promise<NoteFull|null>{return this.call("templates:apply",{id,notebookId,...(folderId?{folderId}:{})}) as Promise<NoteFull|null>}
   restoreBuiltinTemplates():Promise<number>{return this.call("templates:restore-builtins",null) as Promise<number>}
   exportBegin(noteId:string,format:'pdf'|'html'):Promise<{canceled:true}|ExportBeginReady>{return this.call("export:begin",{noteId,format}) as Promise<{canceled:true}|ExportBeginReady>}
   exportFinish(x:ChannelInputs['export:finish']):Promise<ExportFinishResult>{return this.call("export:finish",x) as Promise<ExportFinishResult>}

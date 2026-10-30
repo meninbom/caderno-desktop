@@ -1,4 +1,4 @@
-import { PdfSaveSchema, TaskCreateSchema } from '../../shared/ipc';
+import { IdSchema, PdfSaveSchema, TaskCreateSchema } from '../../shared/ipc';
 import { localDateTimeInZone } from '../../shared/zoned-time';
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
@@ -53,7 +53,7 @@ export function inspectRaster(data: Buffer): { mime: string; width: number; heig
 export class AttachmentsRepo {
   constructor(private db: Database.Database, private attachmentsDir: string) {}
 
-  importEml(notebookId: number | null, message: ParsedEml): { duplicate: boolean; attachmentCount: number; noteId?: string } {
+  importEml(notebookId: number | null, message: ParsedEml, folderId?: string | null): { duplicate: boolean; attachmentCount: number; noteId?: string } {
     if (this.db.prepare("SELECT 1 FROM eml_imports WHERE message_key=?").get(message.key)) return { duplicate: true, attachmentCount: 0 };
     const files: { stage: string; dest: string; name: string; mime: string; bytes: Buffer; hash: string }[] = [];
     try {
@@ -64,10 +64,18 @@ export class AttachmentsRepo {
         files.push({ stage, dest, name: a.fileName, mime: a.mimeType, bytes: a.content, hash: crypto.createHash("sha256").update(a.content).digest("hex") });
       }
       for (const f of files) { fs.renameSync(f.stage, f.dest); f.stage = ""; }
+      let resolvedFolder: string | null = null;
+      if (folderId) {
+        const folder = this.db.prepare("SELECT notebook_id AS notebookId FROM note_folders WHERE id=?").get(folderId) as { notebookId: number } | undefined;
+        if (!folder) throw new Error("Pasta não encontrada.");
+        if (notebookId !== null && notebookId !== folder.notebookId) throw new Error("A pasta não pertence a este caderno.");
+        notebookId = folder.notebookId;
+        resolvedFolder = folderId;
+      }
       const noteId = crypto.randomUUID(), now = Date.now(), html = emlHtml(message);
       this.db.transaction(() => {
-        this.db.prepare("INSERT INTO notes(id,notebook_id,title,content_html,content_text,created_at,updated_at) VALUES(?,?,?,?,?,?,?)")
-          .run(noteId, notebookId, message.subject || "E-mail sem assunto", html, extractVisibleText(html), now, now);
+        this.db.prepare("INSERT INTO notes(id,notebook_id,folder_id,title,content_html,content_text,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)")
+          .run(noteId, notebookId, resolvedFolder, message.subject || "E-mail sem assunto", html, extractVisibleText(html), now, now);
         this.db.prepare("INSERT INTO eml_imports(message_key,note_id,imported_at) VALUES(?,?,?)").run(message.key,noteId,now);
         const insert = this.db.prepare("INSERT INTO attachments(note_id,file_name,stored_name,byte_size,created_at,mime_type,sha256,kind) VALUES(?,?,?,?,?,?,?,'file')");
         for (let i=0;i<files.length;i++) { const f=files[i]; insert.run(noteId,f.name,path.basename(f.dest),f.bytes.length,Date.now(),f.mime,f.hash); }
@@ -172,9 +180,11 @@ export interface BackupPayload {
   exportedAt: number;
   notebooks: { id: number; name: string; stackId?: string | null }[];
   stacks?: { id: string; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
+  folders?: { id: string; notebookId: number; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
   notes: {
     id: string;
     notebookId: number | null;
+    folderId?: string | null;
     title: string;
     contentHtml: string;
     favorited: boolean;
@@ -207,9 +217,11 @@ export class BackupRepo {
     if(assetRows.some(f=>f.byte_size>(f.kind==="image"?10:50)*1024*1024)||assetRows.reduce((n,f)=>n+f.byte_size,0)>300*1024*1024) throw new Error("Backup excede limites: imagens até 10 MB, outros anexos até 50 MB e total até 300 MB.");
     const notebooks = this.db.prepare("SELECT id, name, stack_id AS stackId FROM notebooks").all() as unknown as { id: number; name: string; stackId: string | null }[];
     const stacks = this.db.prepare("SELECT id,name,sort_order AS sortOrder,created_at AS createdAt,updated_at AS updatedAt FROM notebook_stacks ORDER BY sort_order,name COLLATE NOCASE").all() as unknown as BackupPayload["stacks"];
-    const noteRows = this.db.prepare("SELECT id, notebook_id, title, content_html, favorited, pinned, deleted_at, created_at, updated_at FROM notes").all() as unknown as {
+    const folders = this.db.prepare("SELECT id,notebook_id AS notebookId,name,sort_order AS sortOrder,created_at AS createdAt,updated_at AS updatedAt FROM note_folders ORDER BY sort_order,name COLLATE NOCASE").all() as unknown as BackupPayload["folders"];
+    const noteRows = this.db.prepare("SELECT id, notebook_id, folder_id, title, content_html, favorited, pinned, deleted_at, created_at, updated_at FROM notes").all() as unknown as {
       id: string;
       notebook_id: number | null;
+      folder_id: string | null;
       title: string;
       content_html: string;
       favorited: number;
@@ -229,13 +241,15 @@ export class BackupRepo {
     }
     return {
       app: "caderno",
-      schemaVersion: 8,
+      schemaVersion: 9,
       exportedAt: Date.now(),
       notebooks,
       stacks,
+      folders,
       notes: noteRows.map(n => ({
         id: n.id,
         notebookId: n.notebook_id,
+        folderId: n.folder_id,
         title: n.title,
         contentHtml: n.content_html,
         favorited: n.favorited === 1,
@@ -304,20 +318,40 @@ export class BackupRepo {
         notebookMap.set(nb.id, getOrCreateNotebook(nb.name));
         if (nb.stackId && stackMap.has(nb.stackId)) this.db.prepare("UPDATE notebooks SET stack_id=? WHERE id=?").run(stackMap.get(nb.stackId), notebookMap.get(nb.id));
       }
+      const folderMap = new Map<string, string>();
+      for (const folder of payload.folders ?? []) {
+        const notebookId = notebookMap.get(folder.notebookId);
+        if (notebookId === undefined) continue;
+        const name = folder.name.trim();
+        const existing = this.db.prepare("SELECT id FROM note_folders WHERE notebook_id=? AND name=? COLLATE NOCASE").get(notebookId, name) as { id: string } | undefined;
+        let id = existing?.id;
+        if (!id) {
+          const taken = this.db.prepare("SELECT 1 FROM note_folders WHERE id=?").get(folder.id);
+          id = taken ? crypto.randomUUID() : folder.id;
+          this.db.prepare("INSERT INTO note_folders(id,notebook_id,name,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(id, notebookId, name, folder.sortOrder, folder.createdAt, folder.updatedAt);
+        } else {
+          this.db.prepare("UPDATE note_folders SET sort_order=?, updated_at=? WHERE id=?").run(folder.sortOrder, folder.updatedAt, id);
+        }
+        folderMap.set(folder.id, id);
+      }
       for (const note of payload.notes) {
         const notebookId = note.notebookId !== null ? (notebookMap.get(note.notebookId) ?? null) : null;
+        const applyFolder = payload.schemaVersion >= 9 || note.folderId !== undefined;
+        const folderId = applyFolder ? (typeof note.folderId === "string" ? (folderMap.get(note.folderId) ?? null) : null) : null;
         this.db
           .prepare(
-            `INSERT INTO notes (id, notebook_id, title, content_html, content_text, favorited, pinned, deleted_at, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `INSERT INTO notes (id, notebook_id, folder_id, title, content_html, content_text, favorited, pinned, deleted_at, created_at, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET notebook_id = excluded.notebook_id, title = excluded.title,
                content_html = excluded.content_html, content_text = excluded.content_text,
                favorited = excluded.favorited, pinned = excluded.pinned, deleted_at = excluded.deleted_at,
-               created_at = excluded.created_at, updated_at = excluded.updated_at`
+               created_at = excluded.created_at, updated_at = excluded.updated_at,
+               folder_id = CASE WHEN ? THEN excluded.folder_id ELSE notes.folder_id END`
           )
           .run(
             note.id,
             notebookId,
+            folderId,
             note.title,
             note.contentHtml,
             extractVisibleText(note.contentHtml),
@@ -325,7 +359,8 @@ export class BackupRepo {
             note.pinned ? 1 : 0,
             note.deletedAt,
             note.createdAt,
-            note.updatedAt
+            note.updatedAt,
+            applyFolder ? 1 : 0
           );
         for (const tagName of note.tags) {
           let tag = this.db.prepare("SELECT id FROM tags WHERE name = ? COLLATE NOCASE").get(tagName) as { id: number } | undefined;
@@ -333,6 +368,8 @@ export class BackupRepo {
           this.db.prepare("INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)").run(note.id, tag.id);
         }
       }
+      this.db.prepare(`UPDATE notes SET folder_id=NULL WHERE folder_id IS NOT NULL AND NOT EXISTS (
+        SELECT 1 FROM note_folders f WHERE f.id=notes.folder_id AND f.notebook_id=notes.notebook_id)`).run();
       for(const task of payload.tasks??[]){
         if(!this.db.prepare('SELECT 1 FROM notes WHERE id=?').get(task.noteId))continue;
         const fields='note_id,title,is_done,due_at,reminder_at,reminder_state,created_at,updated_at,recurrence,priority,time_zone,recurrence_anchor,recurrence_spawned,recurrence_parent_id';
@@ -377,7 +414,7 @@ export class BackupRepo {
     if (typeof value !== "object" || value === null) return "payload não é um objeto";
     const p = value as Partial<BackupPayload>;
     if (p.app !== "caderno") return "campo app deve ser \"caderno\"";
-    if (!Number.isInteger(p.schemaVersion)||p.schemaVersion!<1||p.schemaVersion!>8) return "schemaVersion incompatível";
+    if (!Number.isInteger(p.schemaVersion)||p.schemaVersion!<1||p.schemaVersion!>9) return "schemaVersion incompatível";
     if (!Array.isArray(p.notes)) return "notes ausente";
     if (!Array.isArray(p.notebooks)) return "notebooks ausente";
     if ((p as BackupPayload).schemaVersion >= 3 && !Array.isArray((p as BackupPayload).attachments)) return "assets ausentes no backup versão 3";
@@ -385,6 +422,21 @@ export class BackupRepo {
     if ((p as BackupPayload).schemaVersion >= 6 && !Array.isArray((p as BackupPayload).transcripts)) return "transcrições ausentes no backup versão 6";
     if(p.schemaVersion!>=7&&!Array.isArray(p.pdfAnnotations))return 'marcações de PDF ausentes';
     if(p.schemaVersion!>=8&&!Array.isArray(p.templates))return 'modelos ausentes no backup versão 8';
+    if(p.schemaVersion!>=9&&!Array.isArray(p.folders))return 'pastas ausentes no backup versão 9';
+    if(p.folders!==undefined&&!Array.isArray(p.folders))return 'pastas inválidas';
+    const folderIds=new Set<string>();
+    const folderNames=new Set<string>();
+    const notebookIds=new Set((p.notebooks??[]).map(nb=>(nb as {id?:unknown}).id));
+    for(const folder of p.folders??[]){
+      if(!folder||typeof folder.id!=='string'||!IdSchema.safeParse(folder.id).success||folderIds.has(folder.id))return 'pasta com id inválido';
+      folderIds.add(folder.id);
+      if(typeof folder.name!=='string'||folder.name.trim().length<1||folder.name.trim().length>120)return 'pasta com nome inválido';
+      if(typeof folder.notebookId!=='number'||!notebookIds.has(folder.notebookId))return 'pasta sem caderno';
+      const key=`${folder.notebookId}\n${folder.name.trim().toLocaleLowerCase()}`;
+      if(folderNames.has(key))return 'pasta duplicada no caderno';
+      folderNames.add(key);
+      if(typeof folder.sortOrder!=='number'||!Number.isFinite(folder.createdAt)||!Number.isFinite(folder.updatedAt))return 'pasta com dados inválidos';
+    }
     if(p.tasks!==undefined&&!Array.isArray(p.tasks))return 'tarefas inválidas';
     const parentIds=new Set<string>();
     for(const task of p.tasks??[]){
@@ -407,10 +459,15 @@ export class BackupRepo {
     if (Array.isArray((p as BackupPayload).attachments) && (p as BackupPayload).attachments!.length > 10000) return "muitos anexos";
     for (const n of p.notes) {
       if (typeof n !== "object" || n === null) return "nota inválida";
-      const note = n as { id?: unknown; title?: unknown; contentHtml?: unknown };
+      const note = n as { id?: unknown; title?: unknown; contentHtml?: unknown; notebookId?: unknown; folderId?: unknown };
       if (typeof note.id !== "string" || note.id.length === 0) return "nota com id inválido";
       if (typeof note.title !== "string") return "nota com title inválido";
       if (typeof note.contentHtml !== "string") return "nota com contentHtml inválido";
+      if (note.folderId !== undefined && note.folderId !== null) {
+        if (typeof note.folderId !== "string" || !folderIds.has(note.folderId)) return "pasta da nota ausente";
+        const folder = (p.folders ?? []).find(item => item.id === note.folderId);
+        if (!folder || folder.notebookId !== note.notebookId) return "pasta não pertence ao caderno da nota";
+      }
     }
     for (const nb of p.notebooks) {
       if (typeof nb !== "object" || nb === null) return "caderno inválido";

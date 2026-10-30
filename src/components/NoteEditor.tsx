@@ -6,7 +6,7 @@ import { buildNoteExtensions } from "../editor/extensions";
 import fixWebmDuration from "fix-webm-duration";
 import { MediaPreview, type PreviewAttachment } from "./MediaPreview";
 import {
-  Bold, Italic, Code, List, ListOrdered, SquareCheck, Quote, Link2, CodeXml,
+  Bold, Italic, Code, List, ListOrdered, SquareCheck, Quote, Link2, CodeXml, Folder,
   Heading1, Heading2, Heading3, Undo2, Redo2, Star, Pin, RotateCcw, Trash2, AudioLines,
   Paperclip, X, FileDown, Columns2, BookmarkPlus, FileText, FileCode2, NotebookPen, Book, Table2, ImagePlus, Underline as UnderlineIcon, AlignLeft, AlignCenter, AlignRight, Mic, Type, Ellipsis,
 } from "lucide-react";
@@ -387,6 +387,7 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
         {!inTrash && (
           <div className="status-actions">
             <NoteNotebook />
+            <NoteFolderSelect />
             <NoteTags />
             <NoteAttachments onInsertImage={(storedName,alt)=>editor.chain().focus().setImage({src:`caderno-asset://${storedName}`,alt,title:alt}).run()} onInsertMedia={(item,sourceNoteId)=>{if(noteRef.current?.id!==sourceNoteId)return;if(item.mimeType?.startsWith("image/")){editor.chain().focus().setImage({src:`caderno-asset://${item.storedName}`,alt:item.fileName}).run();return;}editor.chain().focus().insertContent([{type:"attachment",attrs:item},{type:"paragraph"}]).run();}} />
             <AudioRecorder key={note.id} noteId={note.id} onSaved={async()=>{await refreshNotes();}} />
@@ -434,6 +435,27 @@ function InlineImageDialog({src,alt,onClose}:{src:string;alt:string;onClose:()=>
   const [zoom,setZoom]=useState(100),[error,setError]=useState("");
   useEffect(()=>{const previous=document.activeElement as HTMLElement|null;const close=document.querySelector<HTMLElement>(".image-preview-close");close?.focus();const key=(e:KeyboardEvent)=>{if(e.key==="Escape")onClose();};document.addEventListener("keydown",key);return()=>{document.removeEventListener("keydown",key);previous?.focus();};},[]);
   return <div className="media-preview-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)onClose();}}><section className="media-preview" role="dialog" aria-modal="true" aria-label="Visualizar imagem" onKeyDown={e=>{if(e.key==="Tab"){const buttons=[...e.currentTarget.querySelectorAll<HTMLButtonElement>('button:not(:disabled)')],first=buttons[0],last=buttons[buttons.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}}}><header><strong>{alt}</strong><div className="media-controls"><button aria-label="Reduzir zoom" onClick={()=>setZoom(v=>Math.max(25,v-25))}>−</button><span>{zoom}%</span><button aria-label="Ampliar zoom" onClick={()=>setZoom(v=>Math.min(300,v+25))}>＋</button><button className="image-preview-close" aria-label="Fechar visualização" onClick={onClose}>Fechar</button></div></header><div className="media-preview-body">{error?<p role="alert">{error}</p>:<img className="preview-image" src={src} alt={alt} style={{width:`${zoom}%`}} onError={()=>setError("Não foi possível decodificar esta imagem.")}/>}</div></section></div>;
+}
+
+function NoteFolderSelect() {
+  const { state, refreshMeta, refreshNotes, openNote } = useAppStore();
+  const note = state.openNote!;
+  const folders = state.folders.filter(folder => folder.notebookId === note.notebookId);
+  const change = async (value: string) => {
+    await client.moveNoteToFolder(note.id, value === "" ? null : value);
+    await refreshNotes();
+    await refreshMeta();
+    await openNote(note.id);
+  };
+  return (
+    <span className="status-field" title="Mover para pasta">
+      <Folder size={13} />
+      <select className="status-select" aria-label="Pasta da nota" value={note.folderId ?? ""} disabled={note.notebookId === null} onChange={e => void change(e.target.value)}>
+        <option value="">Sem pasta</option>
+        {folders.map(folder => <option key={folder.id} value={folder.id}>{folder.name}</option>)}
+      </select>
+    </span>
+  );
 }
 
 function NoteNotebook() {

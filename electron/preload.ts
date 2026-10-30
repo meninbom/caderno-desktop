@@ -1,11 +1,11 @@
 import { contextBridge, ipcRenderer } from "electron";
 
 const validChannels = new Set<string>([
-  "notes:list", "notes:get", "notes:create", "notes:update", "notes:move",
+  "notes:list", "notes:get", "notes:create", "notes:update", "notes:move", "notes:moveToFolder",
   "notes:backlinks","notes:search","pdf:list","pdf:save","pdf:delete",
   "notes:find", "notes:favorite", "notes:pin", "notes:delete", "notes:restore", "notes:purge",
   "notes:emptyTrash", "notebooks:list", "notebooks:create", "notebooks:rename",
-  "notebooks:delete", "notebooks:moveToStack", "stacks:list", "stacks:create", "stacks:rename", "stacks:delete", "tags:list", "tags:create", "tags:rename", "tags:delete", "tags:attach", "tags:detach",
+  "notebooks:delete", "notebooks:moveToStack", "stacks:list", "stacks:create", "stacks:rename", "stacks:delete", "folders:list", "folders:create", "folders:rename", "folders:delete", "tags:list", "tags:create", "tags:rename", "tags:delete", "tags:attach", "tags:detach",
   "counts:get", "theme:get", "theme:set", "attachments:list", "attachments:save",
   "images:save",
   "tasks:list","tasks:create","tasks:update","tasks:delete","tasks:reminder-due","events:list","events:create","events:update","events:delete",

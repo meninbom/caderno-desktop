@@ -111,7 +111,7 @@ describe("modelos de nota", () => {
     const source = fresh(), { note } = noteWithMedia(source);
     const saved = source.templates.createFromNote(note.id, { name: "Portátil" });
     const payload = source.backup.dump();
-    expect(payload.schemaVersion).toBe(8);
+    expect(payload.schemaVersion).toBe(9);
     expect(payload.templates!.find(t => t.id === saved.template.id)!.assets).toHaveLength(2);
     const target = fresh();
     const corrupt = structuredClone(payload); corrupt.templates!.find(t => t.id === saved.template.id)!.assets[0].sha256 = "0".repeat(64);

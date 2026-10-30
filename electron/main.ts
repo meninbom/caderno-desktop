@@ -5,7 +5,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import { Readable } from "node:stream";
 import { openDatabase } from "./repo/db";
-import { CountsRepo, Meta, NotebooksRepo, NotesRepo, TagsRepo, NotebookStacksRepo, TasksRepo, EventsRepo, AttachmentJobsRepo } from "./repo/sqlite";
+import { CountsRepo, Meta, NotebooksRepo, NotesRepo, TagsRepo, NotebookStacksRepo, NoteFoldersRepo, TasksRepo, EventsRepo, AttachmentJobsRepo } from "./repo/sqlite";
 import { AttachmentsRepo, BackupRepo, inspectRaster } from "./repo/attachments";
 import { PdfAnnotationsRepo } from './repo/pdf-annotations';
 import { TranscriptionsRepo } from "./repo/sqlite";
@@ -72,6 +72,7 @@ let repos: {
   notes: NotesRepo;
   notebooks: NotebooksRepo;
   stacks: NotebookStacksRepo;
+  folders: NoteFoldersRepo;
   tags: TagsRepo;
   counts: CountsRepo;
   meta: Meta;
@@ -355,6 +356,7 @@ function registerHandlers(): void {
       return repos.notes.update(input.id, input);
     },
     "notes:move": (input) => repos.notes.move(input.id, input.notebookId),
+    "notes:moveToFolder": (input) => repos.notes.moveToFolder(input.id, input.folderId),
     "notes:favorite": (input) => repos.notes.setFlag(input.id, "favorited", input.value),
     "notes:pin": (input) => repos.notes.setFlag(input.id, "pinned", input.value),
     "notes:delete": (input) => repos.notes.softDelete(input.id),
@@ -370,6 +372,10 @@ function registerHandlers(): void {
     "stacks:create": (input) => repos.stacks.create(input.name.trim()),
     "stacks:rename": (input) => repos.stacks.rename(input.id, input.name.trim()),
     "stacks:delete": (input) => repos.stacks.delete(input.id),
+    "folders:list": () => repos.folders.list(),
+    "folders:create": (input) => repos.folders.create(input.notebookId, input.name),
+    "folders:rename": (input) => repos.folders.rename(input.id, input.name),
+    "folders:delete": (input) => repos.folders.delete(input.id),
     "tags:list": () => repos.tags.list(),
     "tags:create": (input) => repos.tags.create(input.name),
     "tags:rename": (input) => repos.tags.rename(input.id, input.name),
@@ -409,7 +415,7 @@ function registerHandlers(): void {
     "templates:update": (x) => repos.templates.update(x.id, x),
     "templates:delete": (x) => repos.templates.delete(x.id),
     "templates:restore-builtins": () => repos.templates.restoreBuiltins(),
-    "templates:apply": (x) => { const id = repos.templates.apply(x.id, x.notebookId ?? null); mainWindow?.webContents.send("attachment-jobs-changed"); return repos.notes.get(id); },
+    "templates:apply": (x) => { const id = repos.templates.apply(x.id, x.notebookId ?? null, new Date(), x.folderId ?? null); mainWindow?.webContents.send("attachment-jobs-changed"); return repos.notes.get(id); },
     "export:begin": async (x) => {
       const note = repos.notes.get(x.noteId);
       if (!note) throw new Error("Nota não encontrada.");
@@ -479,7 +485,7 @@ function registerHandlers(): void {
       for (const item of input.items) {
         const html = markdownToNoteHtml(item.content);
         const titleFromContent = markdownHeadline(item.content) ?? item.fileName.replace(/\.[^.]+$/, "");
-        repos.notes.create({ notebookId: input.notebookId ?? null, title: titleFromContent, contentHtml: html });
+        repos.notes.create({ notebookId: input.notebookId ?? null, folderId: input.folderId, title: titleFromContent, contentHtml: html });
         created += 1;
       }
       return { created };
@@ -493,7 +499,7 @@ function registerHandlers(): void {
           if (typeof filePath !== "string" || !filePath) throw new Error("Caminho de arquivo inválido.");
           const stat = fs.statSync(filePath); if (!stat.isFile() || stat.size > 25 * 1024 * 1024) throw new Error("Arquivo acima de 25 MB ou inválido.");
           const parsed = await parseEml(fs.readFileSync(filePath), path.basename(filePath));
-          const result = repos.attachments.importEml(input.notebookId, parsed);
+          const result = repos.attachments.importEml(input.notebookId, parsed, input.folderId);
           if (result.duplicate) duplicates++; else { created++; attachments += result.attachmentCount; }
         } catch (error) { errors.push(`${typeof filePath === "string" ? path.basename(filePath) : "arquivo"}: ${error instanceof Error ? error.message : String(error)}`); }
       }
@@ -591,6 +597,7 @@ app.whenReady().then(() => {
     notes: new NotesRepo(db),
     notebooks: new NotebooksRepo(db),
     stacks: new NotebookStacksRepo(db),
+    folders: new NoteFoldersRepo(db),
     tags: new TagsRepo(db),
     counts: new CountsRepo(db),
     meta: new Meta(db),

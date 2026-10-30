@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import {
   LayoutTemplate, Search, Book, Files, Star, Tag as TagIcon, Trash2, Plus,
   SunMedium, MoonStar, Settings, PanelLeftClose, ShieldCheck, Pencil, MoreHorizontal,
-  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, FolderPlus, FolderInput, Check,
+  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, Folder, FolderPlus, FolderInput, Check,
 } from "lucide-react";
 import { useAppStore, Selection } from "../state/store";
 import { useDismissablePopover } from "../hooks/useDismissablePopover";
@@ -66,7 +66,9 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [stacks, setStacks] = useState<Awaited<ReturnType<typeof client.listStacks>>>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+  const [collapsedFolders, setCollapsedFolders] = useState<Record<number, boolean>>({});
   const [stackDialog, setStackDialog] = useState<{ action: "create" | "rename" | "duplicate"; id?: string; value: string } | null>(null);
+  const [folderDialog, setFolderDialog] = useState<{ action: "create" | "rename"; notebookId: number; id?: string; value: string } | null>(null);
   const morePopover = useDismissablePopover(moreOpen, () => setMoreOpen(false));
   const refreshStacks = async () => setStacks(await client.listStacks());
   useEffect(() => { void refreshStacks(); }, []);
@@ -94,6 +96,29 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
     if (!saved) { dispatch({ type: "error", message: `Já existe uma pilha com o nome "${name}".` }); return; }
     setStackDialog(null);
     await refreshStacks(); await refreshMeta();
+  };
+
+  const submitFolderDialog = async () => {
+    const dialog = folderDialog;
+    const name = dialog?.value.trim();
+    if (!dialog || !name) return;
+    const saved = dialog.action === "rename" && dialog.id
+      ? await client.renameFolder(dialog.id, name)
+      : await client.createFolder(dialog.notebookId, name);
+    if (!saved) { dispatch({ type: "error", message: `Já existe uma pasta com o nome "${name}" neste caderno.` }); return; }
+    setFolderDialog(null);
+    setCollapsedFolders(v => ({ ...v, [dialog.notebookId]: false }));
+    await refreshMeta();
+  };
+
+  const removeFolder = async (id: string, notebookId: number, name: string) => {
+    if (!window.confirm(`Excluir a pasta "${name}"? As notas permanecem neste caderno.`)) return;
+    await client.deleteFolder(id);
+    if (state.selection.kind === "folder" && state.selection.folderId === id) {
+      dispatch({ type: "selection", selection: { kind: "notebook", notebookId } });
+    }
+    await refreshMeta();
+    await refreshNotes();
   };
 
   const select = (selection: Selection) => {
@@ -133,7 +158,7 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
 
   const removeNotebook = async (id: number) => {
     await (await import("../api/client")).client.deleteNotebook(id);
-    if (state.selection.kind === "notebook" && state.selection.notebookId === id) {
+    if ((state.selection.kind === "notebook" || state.selection.kind === "folder") && state.selection.notebookId === id) {
       dispatch({ type: "selection", selection: { kind: "all" } });
     }
     await refreshMeta();
@@ -142,13 +167,29 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
 
   const renderNotebook = (nb: (typeof state.notebooks)[number]) => {
     const active = state.selection.kind === "notebook" && state.selection.notebookId === nb.id;
-    return <div key={`nb-${nb.id}`} className={`notebook-stack-row ${active ? "active" : ""}`}>
+    const folders = state.folders.filter(folder => folder.notebookId === nb.id);
+    const collapsedFolder = collapsedFolders[nb.id] === true;
+    return <div key={`nb-${nb.id}`} className="notebook-block">
+      <div className={`notebook-stack-row ${active ? "active" : ""}`}>
+      {folders.length > 0 && <button className="icon folder-toggle" title={collapsedFolder ? "Expandir pastas" : "Recolher pastas"} aria-label={`${collapsedFolder ? "Expandir" : "Recolher"} pastas de ${nb.name}`} onClick={() => setCollapsedFolders(v => ({ ...v, [nb.id]: !collapsedFolder }))}>{collapsedFolder ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button>}
       {renamingId === nb.id ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenamingId(null); }} onBlur={() => void commitRename()} style={{ width: "100%", padding: "4px 8px", fontSize: 12.5 }} /> : <Item icon={<Book size={15} />} label={nb.name} count={nb.noteCount} active={active} onClick={() => select({ kind: "notebook", notebookId: nb.id })} />}
       {renamingId !== nb.id && <span className="nb-actions">
+        <button className="icon" title="Nova pasta" aria-label={`Nova pasta em ${nb.name}`} onClick={() => setFolderDialog({ action: "create", notebookId: nb.id, value: "" })}><FolderPlus size={12} /></button>
         <StackMenu notebookName={nb.name} stackId={nb.stackId ?? null} stacks={stacks} onMove={async id => { await client.moveNotebookToStack(nb.id, id); await refreshMeta(); await refreshStacks(); }} />
         <button className="icon" title="Renomear" aria-label={`Renomear ${nb.name}`} onClick={() => startRename(nb.id, nb.name)}><Pencil size={12} /></button>
         <button className="icon" title="Excluir caderno" aria-label={`Excluir ${nb.name}`} onClick={() => void removeNotebook(nb.id)}><Trash2 size={12} /></button>
       </span>}
+      </div>
+      {!collapsedFolder && folders.length > 0 && <div className="folder-list">{folders.map(folder => {
+        const folderActive = state.selection.kind === "folder" && state.selection.folderId === folder.id;
+        return <div key={folder.id} className={`folder-row ${folderActive ? "active" : ""}`}>
+          <Item icon={<Folder size={14} />} label={folder.name} count={folder.noteCount} active={folderActive} onClick={() => select({ kind: "folder", notebookId: nb.id, folderId: folder.id })} />
+          <span className="nb-actions">
+            <button className="icon" title="Renomear pasta" aria-label={`Renomear pasta ${folder.name}`} onClick={() => setFolderDialog({ action: "rename", notebookId: nb.id, id: folder.id, value: folder.name })}><Pencil size={12} /></button>
+            <button className="icon" title="Excluir pasta" aria-label={`Excluir pasta ${folder.name}`} onClick={() => void removeFolder(folder.id, nb.id, folder.name)}><Trash2 size={12} /></button>
+          </span>
+        </div>;
+      })}</div>}
     </div>;
   };
 
@@ -161,10 +202,20 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
       </div>
 
       <button className="new-note" onClick={async () => {
+        try {
+          if (area === 'notes' && state.openNote) {
+            await new Promise<void>((resolve, reject) => window.dispatchEvent(new CustomEvent('caderno:flush-editor', { detail: { resolve, reject } })));
+          }
+        } catch (error) {
+          dispatch({ type: 'error', message: `Não foi possível salvar a nota: ${(error as Error).message}` });
+          return;
+        }
         onArea?.('notes');
         const c = (await import("../api/client")).client;
         const created = await c.createNote(
-          state.selection.kind === "notebook" ? { notebookId: state.selection.notebookId } : {}
+          state.selection.kind === "folder"
+            ? { notebookId: state.selection.notebookId, folderId: state.selection.folderId }
+            : state.selection.kind === "notebook" ? { notebookId: state.selection.notebookId } : {}
         );
         if (state.selection.kind === "trash") dispatch({ type: "selection", selection: { kind: "all" } });
         await refreshMeta();
@@ -283,6 +334,14 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
           <label htmlFor="stack-name">Nome</label>
           <input id="stack-name" autoFocus value={stackDialog.value} maxLength={80} onChange={e => setStackDialog({ ...stackDialog, value: e.target.value })} onKeyDown={e => { if (e.key === "Enter") void submitStackDialog(); }} />
           <div className="row"><button onClick={() => setStackDialog(null)}>Cancelar</button><button className="primary" disabled={!stackDialog.value.trim()} onClick={() => void submitStackDialog()}>{stackDialog.action === "rename" ? "Salvar" : "Criar"}</button></div>
+        </section>
+      </div>}
+      {folderDialog && <div className="overlay" onMouseDown={e => { if (e.target === e.currentTarget) setFolderDialog(null); }}>
+        <section className="modal stack-dialog" role="dialog" aria-modal="true" aria-labelledby="folder-dialog-title" onKeyDown={e => { if (e.key === "Escape") setFolderDialog(null); }}>
+          <h3 id="folder-dialog-title">{folderDialog.action === "rename" ? "Renomear pasta" : "Nova pasta"}</h3>
+          <label htmlFor="folder-name">Nome</label>
+          <input id="folder-name" autoFocus value={folderDialog.value} maxLength={120} onChange={e => setFolderDialog({ ...folderDialog, value: e.target.value })} onKeyDown={e => { if (e.key === "Enter") void submitFolderDialog(); }} />
+          <div className="row"><button onClick={() => setFolderDialog(null)}>Cancelar</button><button className="primary" disabled={!folderDialog.value.trim()} onClick={() => void submitFolderDialog()}>{folderDialog.action === "rename" ? "Salvar" : "Criar"}</button></div>
         </section>
       </div>}
     </aside>

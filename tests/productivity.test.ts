@@ -65,7 +65,7 @@ describe('migração de dados existentes',()=>{
     try{
       const note=new NotesRepo(db).create({title:'Nota antiga',contentHtml:'<p>Não alterar.</p>'}),due=Date.UTC(2028,0,1);
       const task=new TasksRepo(db).create({noteId:note.id,title:'Prazo antigo',dueAt:due,reminderAt:due-1000});
-      db.exec('DROP TABLE pdf_annotations; DROP INDEX idx_task_occurrence_parent;');
+      db.exec('DROP INDEX idx_notes_folder; ALTER TABLE notes DROP COLUMN folder_id; DROP TABLE note_folders; DROP TABLE pdf_annotations; DROP INDEX idx_task_occurrence_parent;');
       for(const column of ['recurrence','priority','time_zone','recurrence_anchor','recurrence_spawned','recurrence_parent_id'])db.exec(`ALTER TABLE tasks DROP COLUMN ${column}`);
       db.exec('DROP TABLE note_template_assets; DROP TABLE note_templates;');db.prepare('DELETE FROM migration_log WHERE version>=11').run();db.close();
       db=openDatabase({database,attachments:assets});

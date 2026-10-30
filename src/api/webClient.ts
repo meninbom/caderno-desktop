@@ -9,6 +9,7 @@ import type {
   NoteMeta,
   Notebook,
   NotebookStack,
+  NoteFolder,
   NoteLinkTarget,
   SidebarCounts,
   SortOrder,
@@ -29,6 +30,7 @@ import { tokenizeSearchText } from "../../shared/search";
 interface WebNote {
   id: string;
   notebookId: number | null;
+  folderId?: string | null;
   title: string;
   contentHtml: string;
   contentText: string;
@@ -39,6 +41,7 @@ interface WebNote {
   updatedAt: number;
 }
 interface WebNotebook { id: number; name: string; createdAt: number; stackId?: string | null }
+interface WebFolder { id: string; notebookId: number; name: string; sortOrder: number; createdAt: number; updatedAt: number }
 interface WebTag { id: number; name: string }
 interface WebAttachment { id: number; noteId: string; fileName: string; byteSize: number; dataBase64: string; createdAt: number }
 
@@ -48,6 +51,7 @@ interface WebStore {
   notes: WebNote[];
   notebooks: WebNotebook[];
   stacks?: { id: string; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
+  folders?: WebFolder[];
   tags: WebTag[];
   noteTags: { noteId: string; tagId: number }[];
   attachments: WebAttachment[];
@@ -98,6 +102,7 @@ function seedStore(): WebStore {
     theme: "light",
     notes: [welcome, market, meeting],
     notebooks: [nb1, nb2],
+    folders: [],
     tags: [{ id: 1, name: "ideias" }],
     noteTags: [{ noteId: meeting.id, tagId: 1 }],
     attachments: [],
@@ -142,7 +147,11 @@ export class WebClient implements CadernoClient {
       const raw = localStorage.getItem(KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as WebStore;
-        if (Array.isArray(parsed.notes)) return parsed;
+        if (Array.isArray(parsed.notes)) {
+          if (!Array.isArray(parsed.folders)) parsed.folders = [];
+          for (const note of parsed.notes) if (note.folderId === undefined) note.folderId = null;
+          return parsed;
+        }
       }
     } catch {
       /* segue para seed */
@@ -170,6 +179,7 @@ export class WebClient implements CadernoClient {
     return {
       id: n.id,
       notebookId: n.notebookId,
+      folderId: n.folderId ?? null,
       title: n.title,
       favorited: n.favorited,
       pinned: n.pinned,
@@ -195,6 +205,7 @@ export class WebClient implements CadernoClient {
       }
       if (q.view === "favorites" && !n.favorited) return false;
       if (q.view === "notebook" && n.notebookId !== q.notebookId) return false;
+      if (q.view === "folder" && n.folderId !== q.folderId) return false;
       if (q.view === "unfiled" && n.notebookId !== null) return false;
       if (q.view === "tag" && !this.store.noteTags.some(nt => nt.noteId === n.id && nt.tagId === q.tagId)) return false;
       if (term && !matchesSearchPrefix(`${n.title} ${n.contentText}`, term)) return false;
@@ -218,11 +229,13 @@ export class WebClient implements CadernoClient {
     return this.store.notes.filter(n=>n.deletedAt===null && matchesSearchPrefix(`${n.title} ${n.contentText}`, q)).slice(0,limit).map(n=>({id:n.id,title:n.title||"Sem título",preview:extractPreviewHtml(n.contentText)}));
   }
 
-  async createNote(input: { notebookId?: number | null; title?: string; contentHtml?: string }): Promise<NoteFull> {
+  async createNote(input: { notebookId?: number | null; folderId?: string | null; title?: string; contentHtml?: string }): Promise<NoteFull> {
     const now = Date.now();
+    const placed = this.resolveFolder(input.notebookId ?? null, input.folderId ?? null);
     const n: WebNote = {
       id: crypto.randomUUID(),
-      notebookId: input.notebookId ?? null,
+      notebookId: placed.notebookId,
+      folderId: placed.folderId,
       title: input.title ?? "",
       contentHtml: input.contentHtml ?? "",
       contentText: extractVisibleText(input.contentHtml ?? ""),
@@ -250,10 +263,35 @@ export class WebClient implements CadernoClient {
     return this.noteFull(n);
   }
 
+  private resolveFolder(notebookId: number | null, folderId: string | null): { notebookId: number | null; folderId: string | null } {
+    if (!folderId) return { notebookId, folderId: null };
+    const folder = (this.store.folders ?? []).find(item => item.id === folderId);
+    if (!folder) throw new Error("Pasta não encontrada.");
+    if (notebookId !== null && notebookId !== folder.notebookId) throw new Error("A pasta não pertence a este caderno.");
+    return { notebookId: folder.notebookId, folderId };
+  }
+
   async moveNote(id: string, notebookId: number | null): Promise<NoteFull | null> {
     const n = this.store.notes.find(x => x.id === id);
     if (!n) return null;
+    const folder = (this.store.folders ?? []).find(item => item.id === n.folderId);
+    if (notebookId === null || !folder || folder.notebookId !== notebookId) n.folderId = null;
     n.notebookId = notebookId;
+    n.updatedAt = Date.now();
+    this.persist();
+    return this.noteFull(n);
+  }
+
+  async moveNoteToFolder(id: string, folderId: string | null): Promise<NoteFull | null> {
+    const n = this.store.notes.find(x => x.id === id);
+    if (!n) return null;
+    if (folderId === null) n.folderId = null;
+    else {
+      const folder = (this.store.folders ?? []).find(item => item.id === folderId);
+      if (!folder) return null;
+      n.notebookId = folder.notebookId;
+      n.folderId = folder.id;
+    }
     n.updatedAt = Date.now();
     this.persist();
     return this.noteFull(n);
@@ -342,11 +380,45 @@ export class WebClient implements CadernoClient {
   async createStack(name:string):Promise<NotebookStack|null>{if((this.store.stacks??[]).some(s=>s.name.toLowerCase()===name.toLowerCase()))return null;const now=Date.now();const id=crypto.randomUUID();(this.store.stacks??=[]).push({id,name,sortOrder:0,createdAt:now,updatedAt:now});this.persist();return (await this.listStacks()).find(s=>s.id===id)??null;}
   async renameStack(id:string,name:string):Promise<NotebookStack|null>{const s=(this.store.stacks??[]).find(x=>x.id===id);if(!s||(this.store.stacks??[]).some(x=>x.id!==id&&x.name.toLowerCase()===name.toLowerCase()))return null;s.name=name;s.updatedAt=Date.now();this.persist();return (await this.listStacks()).find(x=>x.id===id)??null;}
   async deleteStack(id:string):Promise<boolean>{const before=(this.store.stacks??[]).length;this.store.stacks=(this.store.stacks??[]).filter(x=>x.id!==id);this.store.notebooks.forEach(n=>{if(n.stackId===id)n.stackId=null});this.persist();return this.store.stacks.length<before;}
+  async listFolders(): Promise<NoteFolder[]> {
+    return (this.store.folders ?? []).map(folder => ({
+      ...folder,
+      noteCount: this.store.notes.filter(note => note.folderId === folder.id && note.deletedAt === null).length,
+    })).sort((a, b) => a.sortOrder - b.sortOrder || a.name.localeCompare(b.name));
+  }
+  async createFolder(notebookId: number, name: string): Promise<NoteFolder | null> {
+    if (!this.store.notebooks.some(nb => nb.id === notebookId)) throw new Error("Caderno não encontrado.");
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 120) return null;
+    if ((this.store.folders ?? []).some(folder => folder.notebookId === notebookId && folder.name.toLowerCase() === trimmed.toLowerCase())) return null;
+    const now = Date.now();
+    const folder: WebFolder = { id: crypto.randomUUID(), notebookId, name: trimmed, sortOrder: (this.store.folders ?? []).filter(item => item.notebookId === notebookId).length, createdAt: now, updatedAt: now };
+    (this.store.folders ??= []).push(folder);
+    this.persist();
+    return (await this.listFolders()).find(item => item.id === folder.id) ?? null;
+  }
+  async renameFolder(id: string, name: string): Promise<NoteFolder | null> {
+    const folder = (this.store.folders ?? []).find(item => item.id === id);
+    const trimmed = name.trim();
+    if (!folder || !trimmed || trimmed.length > 120 || (this.store.folders ?? []).some(item => item.id !== id && item.notebookId === folder.notebookId && item.name.toLowerCase() === trimmed.toLowerCase())) return null;
+    folder.name = trimmed;
+    folder.updatedAt = Date.now();
+    this.persist();
+    return (await this.listFolders()).find(item => item.id === id) ?? null;
+  }
+  async deleteFolder(id: string): Promise<boolean> {
+    const before = (this.store.folders ?? []).length;
+    this.store.folders = (this.store.folders ?? []).filter(item => item.id !== id);
+    for (const note of this.store.notes) if (note.folderId === id) note.folderId = null;
+    this.persist();
+    return this.store.folders.length < before;
+  }
 
   async deleteNotebook(id: number): Promise<boolean> {
     const before = this.store.notebooks.length;
     this.store.notebooks = this.store.notebooks.filter(x => x.id !== id);
-    for (const n of this.store.notes) if (n.notebookId === id) n.notebookId = null;
+    this.store.folders = (this.store.folders ?? []).filter(folder => folder.notebookId !== id);
+    for (const n of this.store.notes) if (n.notebookId === id) { n.notebookId = null; n.folderId = null; }
     this.persist();
     return this.store.notebooks.length < before;
   }
@@ -491,17 +563,17 @@ export class WebClient implements CadernoClient {
     return { canceled: false, filePath };
   }
 
-  async importMarkdown(items: { fileName: string; content: string }[], notebookId: number | null): Promise<{ created: number }> {
+  async importMarkdown(items: { fileName: string; content: string }[], notebookId: number | null, folderId?: string | null): Promise<{ created: number }> {
     let created = 0;
     for (const item of items) {
       const html = markdownToNoteHtml(item.content);
       const title = markdownHeadline(item.content) ?? item.fileName.replace(/\.[^.]+$/, "");
-      await this.createNote({ notebookId, title, contentHtml: html });
+      await this.createNote({ notebookId, folderId, title, contentHtml: html });
       created += 1;
     }
     return { created };
   }
-  async importEml(_notebookId:number|null):Promise<{canceled?:boolean;created:number;duplicates:number;attachments:number;errors:string[]}>{throw new Error("A importação .eml requer o aplicativo desktop.");}
+  async importEml(_notebookId:number|null,_folderId?:string|null):Promise<{canceled?:boolean;created:number;duplicates:number;attachments:number;errors:string[]}>{throw new Error("A importação .eml requer o aplicativo desktop.");}
 
   async saveBackup(): Promise<{ canceled?: boolean; filePath?: string } | null> {
     const payload = {
@@ -509,9 +581,11 @@ export class WebClient implements CadernoClient {
       schemaVersion: 1,
       exportedAt: Date.now(),
       notebooks: this.store.notebooks.map(nb => ({ id: nb.id, name: nb.name })),
+      folders: (this.store.folders ?? []).map(folder => ({ ...folder })),
       notes: this.store.notes.map(n => ({
         id: n.id,
         notebookId: n.notebookId,
+        folderId: n.folderId ?? null,
         title: n.title,
         contentHtml: n.contentHtml,
         favorited: n.favorited,
@@ -548,7 +622,7 @@ export class WebClient implements CadernoClient {
     }
     // Aplica de forma atômica em memória: monta novo store e só persiste se válido.
     const notes = (p.notes as Array<{
-      id?: unknown; notebookId?: unknown; title?: unknown; contentHtml?: unknown;
+      id?: unknown; notebookId?: unknown; folderId?: unknown; title?: unknown; contentHtml?: unknown;
       favorited?: unknown; pinned?: unknown; deletedAt?: unknown; createdAt?: unknown; updatedAt?: unknown; tags?: unknown;
     }>);
     const notebooks = (p.notebooks as Array<{ id?: unknown; name?: unknown }>);
@@ -562,6 +636,7 @@ export class WebClient implements CadernoClient {
       theme: this.store.theme,
       notes: [],
       notebooks: [],
+      folders: [],
       tags: [],
       noteTags: [],
       attachments: [],
@@ -574,6 +649,16 @@ export class WebClient implements CadernoClient {
       const id = nbSeq;
       nbMap.set(typeof nb.id === "number" ? nb.id : -1, id);
       next.notebooks.push({ id, name: nb.name, createdAt: Date.now() });
+    }
+    const folderMap = new Map<string, string>();
+    const rawFolders = Array.isArray((p as { folders?: unknown }).folders) ? (p as { folders: Array<{ id?: unknown; notebookId?: unknown; name?: unknown; sortOrder?: unknown; createdAt?: unknown; updatedAt?: unknown }> }).folders : [];
+    for (const folder of rawFolders) {
+      if (typeof folder.name !== "string" || typeof folder.notebookId !== "number") continue;
+      const notebookId = nbMap.get(folder.notebookId);
+      if (!notebookId) continue;
+      const id = typeof folder.id === "string" ? folder.id : crypto.randomUUID();
+      next.folders!.push({ id, notebookId, name: folder.name, sortOrder: typeof folder.sortOrder === "number" ? folder.sortOrder : 0, createdAt: typeof folder.createdAt === "number" ? folder.createdAt : Date.now(), updatedAt: typeof folder.updatedAt === "number" ? folder.updatedAt : Date.now() });
+      if (typeof folder.id === "string") folderMap.set(folder.id, id);
     }
     const tagMap = new Map<string, number>();
     let tagSeq = 0;
@@ -590,6 +675,7 @@ export class WebClient implements CadernoClient {
       const note: WebNote = {
         id: n.id as string,
         notebookId,
+        folderId: typeof n.folderId === "string" ? (folderMap.get(n.folderId) ?? null) : null,
         title: n.title as string,
         contentHtml: n.contentHtml as string,
         contentText: extractVisibleText(n.contentHtml as string),
@@ -624,7 +710,7 @@ export class WebClient implements CadernoClient {
   async createTemplateFromNote():Promise<import("../../shared/ipc").TemplateSaveResult>{throw new Error("Modelos de nota exigem o app desktop.");}
   async updateTemplate():Promise<import("../../shared/ipc").NoteTemplateMeta|null>{throw new Error("Modelos de nota exigem o app desktop.");}
   async deleteTemplate():Promise<boolean>{throw new Error("Modelos de nota exigem o app desktop.");}
-  async applyTemplate():Promise<NoteFull|null>{throw new Error("Modelos de nota exigem o app desktop.");}
+  async applyTemplate(_id?:string,_notebookId?:number|null,_folderId?:string|null):Promise<NoteFull|null>{throw new Error("Modelos de nota exigem o app desktop.");}
   async restoreBuiltinTemplates():Promise<number>{return 0;}
   async exportBegin():Promise<{canceled:true}|import("../../shared/ipc").ExportBeginReady>{throw new Error("A exportação em PDF/HTML exige o app desktop.");}
   async exportFinish():Promise<import("../../shared/ipc").ExportFinishResult>{throw new Error("A exportação em PDF/HTML exige o app desktop.");}

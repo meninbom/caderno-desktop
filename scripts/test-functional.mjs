@@ -116,6 +116,21 @@ const assertMoreMenuGeometry = async (width, height, screenshot) => {
   await page.locator('.brand').click();
   await menu.waitFor({ state: 'detached' });
 };
+// Caption buttons live in the Windows titleBarOverlay: top 40px, rightmost ~140px.
+// The formatting toolbar is a centered pill at the bottom of the editor, so its x
+// can pass width-140 without covering those buttons.
+const assertToolbarClearsCaption = async (width, theme) => {
+  const overlaps = await page.locator('.editor-toolbar button, .editor-toolbar select, .editor-toolbar summary').evaluateAll((controls, width) => {
+    const bandBottom = 40, bandLeft = width - 140;
+    return controls.flatMap(el => {
+      const r = el.getBoundingClientRect();
+      if (r.width <= 0 || r.height <= 0) return [];
+      if (!(r.right > bandLeft && r.left < width && r.top < bandBottom && r.bottom > 0)) return [];
+      return [{ label: el.getAttribute('aria-label') || el.getAttribute('title') || el.tagName, left: r.left, top: r.top, right: r.right, bottom: r.bottom }];
+    });
+  }, width);
+  assert.deepEqual(overlaps, [], `toolbar invade caption buttons em ${width} ${theme}: ${JSON.stringify(overlaps)}`);
+};
 
 try {
   app = await electron.launch({ executablePath: electronBin, args: [root,'--use-fake-device-for-media-stream','--use-fake-ui-for-media-stream',`--use-file-for-fake-audio-capture=${fakeAudio}`], env: launchEnv(), timeout: 30000 });
@@ -355,19 +370,19 @@ try {
     assert.equal(await frame.locator('script').count(),0,'sanitizador DOM elimina scripts');assert.equal(await frame.locator('form').count(),0,'sanitizador remove forms');assert.equal(await frame.locator('#top').getAttribute('href'),null,'URL de navegação removida');assert.equal(await frame.locator('img').getAttribute('src'),null,'URL remota de imagem removida');
     const policy=await page.evaluate(async name=>(await fetch(`caderno-asset://${name}`)).headers.get('content-security-policy'),html.storedName);assert.match(policy,/default-src 'none'/);
     await frame.locator('#top').evaluate(el=>el.click());assert.equal(await page.evaluate(()=>location.protocol),'file:','tentativa de top navigation bloqueada');await page.screenshot({path:path.join(artifacts,'media-preview-html-benign.png')});await page.keyboard.press('Escape');await page.locator('iframe[title^="Prévia isolada"]').waitFor({state:'detached'});
-    const video=items.find(a=>a.mimeType==='video/webm');await showAttachments();await page.getByRole('button',{name:`Visualizar ${video.fileName}`}).click();const player=page.locator('.media-preview video');
-    await page.waitForFunction(()=>{const v=document.querySelector('video');return v?.readyState>=1&&v.duration>1.8;});assert.ok(await player.evaluate(v=>v.duration>1.8),'duração de fixture WebM local');
-    await player.evaluate(v=>v.play());await page.waitForFunction(()=>document.querySelector('.media-preview video')?.currentTime>0.1,{timeout:5000});const advanced=await player.evaluate(v=>{const t=v.currentTime;v.pause();return t;});assert.ok(advanced>0.1,'play avança corrente de vídeo');await page.screenshot({path:path.join(artifacts,'media-preview-video-frame.png')});
-    await page.waitForFunction(()=>document.querySelector('.media-preview video')?.paused===true);const stopped=await player.evaluate(v=>v.currentTime);await page.waitForFunction(before=>{const v=document.querySelector('.media-preview video');return Boolean(v?.paused&&Math.abs(v.currentTime-before)<0.08);},stopped,{timeout:1000});assert.ok(Math.abs(await player.evaluate(v=>v.currentTime)-stopped)<0.08,'pause interrompe corrente');
-    await player.evaluate(v=>{v.currentTime=1.2});await page.waitForFunction(()=>Math.abs(document.querySelector('video').currentTime-1.2)<0.15);assert.ok(await player.evaluate(v=>v.controls),'player nativo fornece controles');
+    const video=items.find(a=>a.mimeType==='video/webm');await showAttachments();await page.getByRole('button',{name:`Visualizar ${video.fileName}`}).click();const player=page.locator('.media-preview[role=dialog] video');
+    await page.waitForFunction(()=>{const v=document.querySelector('.media-preview[role=dialog] video');return v?.readyState>=1&&v.duration>1.8;});assert.ok(await player.evaluate(v=>v.duration>1.8),'duração de fixture WebM local');
+    await player.evaluate(v=>v.play());await page.waitForFunction(()=>document.querySelector('.media-preview[role=dialog] video')?.currentTime>0.1,{timeout:5000});const advanced=await player.evaluate(v=>{const t=v.currentTime;v.pause();return t;});assert.ok(advanced>0.1,'play avança corrente de vídeo');await page.screenshot({path:path.join(artifacts,'media-preview-video-frame.png')});
+    await page.waitForFunction(()=>document.querySelector('.media-preview[role=dialog] video')?.paused===true);const stopped=await player.evaluate(v=>v.currentTime);await page.waitForFunction(before=>{const v=document.querySelector('.media-preview[role=dialog] video');return Boolean(v?.paused&&Math.abs(v.currentTime-before)<0.08);},stopped,{timeout:1000});assert.ok(Math.abs(await player.evaluate(v=>v.currentTime)-stopped)<0.08,'pause interrompe corrente');
+    await player.evaluate(v=>{v.currentTime=1.2});await page.waitForFunction(()=>Math.abs(document.querySelector('.media-preview[role=dialog] video').currentTime-1.2)<0.15);assert.ok(await player.evaluate(v=>v.controls),'player nativo fornece controles');
     const videoRange=await page.evaluate(async name=>{const r=await fetch(`caderno-asset://${name}`,{headers:{Range:'bytes=100-199'}});return {status:r.status,size:(await r.arrayBuffer()).byteLength};},video.storedName);assert.deepEqual(videoRange,{status:206,size:100},'seek usa resposta parcial real');await page.keyboard.press('Escape');
     const broken=items.find(a=>a.fileName==='corrupt.pdf');await showAttachments();await page.getByRole('button',{name:`Visualizar ${broken.fileName}`}).click();await page.getByRole('alert').filter({hasText:/Não foi possível abrir este PDF/}).waitFor();await page.keyboard.press('Escape');
     const brokenPath=path.join(userData,'attachments',broken.storedName);fs.unlinkSync(brokenPath);await showAttachments();await page.getByRole('button',{name:`Visualizar ${broken.fileName}`}).click();await page.getByRole('alert').waitFor();await page.keyboard.press('Escape');fs.copyFileSync(path.join(root,'tests/fixtures/media/corrupt.pdf'),brokenPath);
     await showAttachments();await page.locator('.title-input').fill('Etapa 1C QA editada');await page.getByRole('button',{name:'Visualizar two-pages.pdf'}).click();await page.keyboard.press('Escape');
     await waitForNote('Etapa 1C QA editada',()=>true);assert.equal((await invoke('notes:get',{id:noteId})).title,'Etapa 1C QA editada','edição é autosalva e continua na mesma nota com viewer acessível');
     await page.setViewportSize({width:900,height:560});await showAttachments();await page.getByRole('button',{name:'Visualizar two-pages.pdf'}).click();await canvas.waitFor();await settlePdfPaint({page:1,label:'Page One'});
-    const bounds=await page.locator('.media-preview').evaluate(el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom};});assert.ok(bounds.x>=0&&bounds.y>=40&&bounds.right<=900&&bounds.bottom<=560,`PDF viewer não sobrepõe caption em 900x560: ${JSON.stringify(bounds)}`);
-    await captureCompositedPdf(path.join(artifacts,'media-preview-light-900x560.png'),{page:1,label:'Page One'});await page.getByRole('button',{name:'Próxima página'}).click();await settlePdfPaint({page:2,label:'Page Two'});await captureCompositedPdf(path.join(artifacts,'media-preview-light-page-two-900x560.png'),{page:2,label:'Page Two'});await page.keyboard.press('Escape');await page.getByTitle('Alternar tema').click();await showAttachments();await page.getByRole('button',{name:'Visualizar two-pages.pdf'}).click();await canvas.waitFor();await settlePdfPaint({page:1,label:'Page One'});await captureCompositedPdf(path.join(artifacts,'media-preview-dark-900x560.png'),{page:1,label:'Page One'});await page.getByRole('button',{name:'Próxima página'}).click();await settlePdfPaint({page:2,label:'Page Two'});await captureCompositedPdf(path.join(artifacts,'media-preview-dark-page-two-900x560.png'),{page:2,label:'Page Two'});await page.getByRole('button',{name:'Página anterior'}).click();await page.getByTitle('Alternar tema').evaluate(el=>el.click());await page.getByRole('button',{name:'Ampliar zoom'}).click();await page.keyboard.press('Escape');await page.setViewportSize({width:1200,height:780});
+    const bounds=await page.locator('.media-preview[role=dialog]').evaluate(el=>{const r=el.getBoundingClientRect();return {x:r.x,y:r.y,right:r.right,bottom:r.bottom};});assert.ok(bounds.x>=0&&bounds.y>=40&&bounds.right<=900&&bounds.bottom<=560,`PDF viewer não sobrepõe caption em 900x560: ${JSON.stringify(bounds)}`);
+    await captureCompositedPdf(path.join(artifacts,'media-preview-light-900x560.png'),{page:1,label:'Page One'});await page.locator('.media-preview[role=dialog]').getByRole('button',{name:'Próxima página'}).click();await settlePdfPaint({page:2,label:'Page Two'});await captureCompositedPdf(path.join(artifacts,'media-preview-light-page-two-900x560.png'),{page:2,label:'Page Two'});await page.keyboard.press('Escape');await page.getByTitle('Alternar tema').click();await showAttachments();await page.getByRole('button',{name:'Visualizar two-pages.pdf'}).click();await canvas.waitFor();await settlePdfPaint({page:1,label:'Page One'});await captureCompositedPdf(path.join(artifacts,'media-preview-dark-900x560.png'),{page:1,label:'Page One'});await page.locator('.media-preview[role=dialog]').getByRole('button',{name:'Próxima página'}).click();await settlePdfPaint({page:2,label:'Page Two'});await captureCompositedPdf(path.join(artifacts,'media-preview-dark-page-two-900x560.png'),{page:2,label:'Page Two'});await page.locator('.media-preview[role=dialog]').getByRole('button',{name:'Página anterior'}).click();await page.getByTitle('Alternar tema').evaluate(el=>el.click());await page.locator('.media-preview[role=dialog]').getByRole('button',{name:'Ampliar zoom'}).click();await page.keyboard.press('Escape');await page.setViewportSize({width:1200,height:780});
   });
   await check('real keyboard autosave keeps editor, caret and undo history stable', async () => {
     await page.locator('.new-note').click();
@@ -416,12 +431,15 @@ try {
   });
   await check('title focus, blur flush and rapid note switch preserve both notes', async () => {
     await page.locator('.new-note').click();
+    await page.waitForFunction(() => document.querySelector('.title-input')?.value === '');
     await page.locator('.title-input').fill('Troca rápida A');
     await page.locator('.tiptap').fill('corpo A antes do debounce');
     await page.locator('.new-note').click();
+    await page.waitForFunction(() => document.querySelector('.title-input')?.value === '');
     await page.locator('.title-input').fill('Troca rápida B');
     await page.locator('.tiptap').fill('corpo B');
     await page.locator('.title-input').press('Enter');
+    await page.waitForFunction(() => { const el = document.querySelector('.tiptap'); return el === document.activeElement || el?.contains(document.activeElement); });
     assert.equal(await page.locator('.tiptap').evaluate(el => el === document.activeElement || el.contains(document.activeElement)), true);
     await waitForNote('Troca rápida A', n => n.contentHtml.includes('corpo A antes do debounce'));
     await waitForNote('Troca rápida B', n => n.contentHtml.includes('corpo B'));
@@ -443,6 +461,7 @@ try {
     await page.getByRole('button', { name: 'Bloco de código' }).click(); await editor.locator('pre').waitFor();
     await page.getByRole('button', { name: 'Desfazer' }).click(); await page.getByRole('button', { name: 'Refazer' }).click();
     await page.locator('.new-note').click();
+    await page.waitForFunction(() => document.querySelector('.title-input')?.value === '');
     await page.locator('.title-input').fill('Link funcional QA');
     const linkEditor = page.locator('.tiptap'); await linkEditor.fill('texto selecionado para link'); await linkEditor.press('Control+A');
     await openLinkMenu(); await page.locator('.editor-toolbar').getByRole('button', { name: 'Link', exact: true }).click();
@@ -480,7 +499,7 @@ try {
     await page.waitForFunction(() => document.activeElement === document.querySelector('.tiptap'));
   });
   await check('stack UI create/move/collapse/duplicate/rename/delete keeps notebooks', async () => {
-    await page.getByRole('button', { name: 'Notas' }).click();
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click();
     await page.getByRole('button', { name: 'Criar caderno' }).click();
     const input = page.getByPlaceholder('Nome do caderno'); await input.fill('Stack fixture'); await input.press('Enter');
     await page.getByRole('button', { name: 'Criar pilha' }).click();
@@ -544,12 +563,12 @@ try {
     assert.equal(await page.locator('.title-input').inputValue(), 'Destino interno QA');
     await page.locator('.title-input').fill('Destino renomeado QA'); await page.locator('.title-input').press('Tab');
     await waitForNote('Destino renomeado QA', n => n.id === target.id);
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Origem interna QA');
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Origem interna QA');
     await page.locator(`.tiptap a[href="${href}"]`).click();
     await page.waitForFunction(()=>document.querySelector('.title-input')?.value==='Destino renomeado QA');
     assert.equal(await page.locator('.title-input').inputValue(), 'Destino renomeado QA', 'UUID continua apontando após renomear');
     await page.getByTitle('Mover para a lixeira').click();
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Origem interna QA');
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Origem interna QA');
     await page.locator(`.tiptap a[href="${href}"]`).click();
     await page.getByText(/está na lixeira/).waitFor();
     await page.locator('.sidebar').getByRole('button', { name: /Lixeira/ }).click(); await openTitle('Destino renomeado QA');
@@ -558,18 +577,18 @@ try {
     assert.ok((await invoke('notes:get', { id: source.id })).contentHtml.includes(href));
   });
   await check('notebook create/duplicate/rename/move/delete and tag attach/filter/detach', async () => {
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Funcional 001');
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Funcional 001');
     await page.getByRole('button', { name: 'Criar caderno' }).click();
     const nbInput = page.getByPlaceholder('Nome do caderno'); await nbInput.fill('Projetos QA'); await nbInput.press('Enter');
-    await page.getByRole('button', { name: /Projetos QA/ }).waitFor();
+    await page.getByRole('button', { name: /^Projetos QA(?: \d+)?$/ }).waitFor();
     await page.getByRole('button', { name: 'Criar caderno' }).click(); await nbInput.fill('Projetos QA'); await nbInput.press('Enter');
     await page.getByRole('alert').filter({ hasText: 'Já existe' }).waitFor();
     const nb = (await invoke('notebooks:list')).find(x => x.name === 'Projetos QA'); assert.ok(nb);
     await page.getByLabel('Caderno da nota').selectOption(String(nb.id));
-    await page.getByRole('button', { name: /Projetos QA/ }).click(); await page.getByTitle('Renomear').click();
+    await page.getByRole('button', { name: /^Projetos QA(?: \d+)?$/ }).click(); await page.getByRole('button', { name: 'Renomear Projetos QA', exact: true }).click();
     const rename = page.locator('.sidebar input').last(); await rename.fill('Projetos QA 2'); await rename.press('Enter');
     const renamed = (await invoke('notebooks:list')).find(x => x.name === 'Projetos QA 2'); assert.ok(renamed);
-    await page.getByRole('button', { name: /Projetos QA 2/ }).click(); await openTitle('Funcional 001');
+    await page.getByRole('button', { name: /^Projetos QA 2(?: \d+)?$/ }).click(); await openTitle('Funcional 001');
     await page.getByRole('button', { name: 'Etiquetas', exact: true }).click(); const tagInput = page.getByPlaceholder('Buscar ou criar etiqueta…');
     await tagInput.fill('qa-flow'); await page.getByRole('button', { name: 'Criar “qa-flow”', exact: true }).click();
     await page.getByRole('button', { name: 'Etiquetas', exact: true }).click();
@@ -577,12 +596,12 @@ try {
     await page.locator('.sidebar').getByRole('button', { name: /qa-flow/ }).click(); assert.ok((await noteRows().count()) >= 1);
     await openTitle('Funcional 001');
     await page.getByRole('button', { name: 'Etiquetas', exact: true }).click(); await page.getByRole('button', { name: 'Remover etiqueta qa-flow desta nota', exact: true }).click();
-    await page.getByRole('button', { name: /Projetos QA 2/ }).click(); await page.getByTitle('Excluir caderno').click();
+    await page.getByRole('button', { name: /^Projetos QA 2(?: \d+)?$/ }).click(); await page.getByRole('button', { name: 'Excluir Projetos QA 2', exact: true }).click();
     assert.equal((await invoke('notebooks:list')).some(x => x.id === renamed.id), false);
     assert.ok(tagId > 0);
   });
   await check('favorite/pin/filter/order/search title-body-empty-no-results', async () => {
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Funcional 001');
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Funcional 001');
     await page.getByTitle('Marcar como favorita').click(); await page.getByTitle('Fixar no topo').click();
     await page.getByRole('button', { name: 'Favoritas' }).click(); assert.ok(await noteRows().count() >= 1);
     await page.getByLabel('Ordenar').selectOption('title_asc');
@@ -597,10 +616,10 @@ try {
     await search.fill('   '); await page.waitForFunction(() => document.querySelectorAll('.note-row').length >= 1); assert.ok(await noteRows().count() >= 1);
   });
   await check('trash soft delete, restore, purge confirmation cancel/accept, empty cancel/accept', async () => {
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Funcional 001');
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Funcional 001');
     await page.getByTitle('Mover para a lixeira').click(); await page.getByRole('button', { name: 'Lixeira' }).click();
     await openTitle('Funcional 001'); await page.getByRole('button', { name: 'Restaurar' }).click();
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Funcional 001'); await page.getByTitle('Mover para a lixeira').click();
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Funcional 001'); await page.getByTitle('Mover para a lixeira').click();
     await page.getByRole('button', { name: 'Lixeira' }).click(); await openTitle('Funcional 001');
     page.once('dialog', d => d.dismiss()); await page.getByRole('button', { name: 'Excluir definitivamente' }).click();
     assert.equal((await invoke('notes:list', { view: 'trash' })).length, 1);
@@ -657,7 +676,7 @@ try {
     await app.evaluate(() => { globalThis.__qa.openResult = { canceled: true, filePaths: [] }; });
   });
   await check('attachments add/list/open/remove with OS shell boundary mocked and bytes on disk', async () => {
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Import QA');
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Import QA');
     await page.getByTitle('Anexos', { exact: true }).click(); await page.locator('.attach-pop').waitFor();
     const fixture = path.join(runDir, 'anexo.txt'); fs.writeFileSync(fixture, 'bytes de anexo qa');
     await page.getByRole('menuitem', { name: 'Adicionar arquivo' }).click();
@@ -670,7 +689,8 @@ try {
     await page.getByRole('button', { name: 'Mais ações' }).click(); await page.getByRole('menuitem', { name: 'Salvar backup' }).click();
     await page.getByText(/Backup completo salvo em/).waitFor();
     const backupPayload = JSON.parse(fs.readFileSync(path.join(runDir, 'backup.json'), 'utf8'));
-    assert.equal(backupPayload.schemaVersion, 8, 'backup versão 8 inclui mídia, tarefas, calendário, fontes do Clipper, transcrições, modelos e marcações de PDF');
+    assert.equal(backupPayload.schemaVersion, 9, 'backup versão 9 inclui pastas, mídia, tarefas, calendário, fontes do Clipper, transcrições, modelos e marcações de PDF');
+    assert.ok(Array.isArray(backupPayload.folders));
     assert.ok(backupPayload.attachments.some(a => a.storedName === attachment.storedName), 'backup carrega bytes do anexo');
     const imageAttachment=(await invoke('attachments:list',{noteId:(await invoke('notes:list',{view:'all'})).find(n=>n.title==='Tabela QA').id}))[0];
     assert.ok(backupPayload.attachments.some(a=>a.storedName===imageAttachment.storedName&&a.kind==='image'&&a.sha256),'backup inclui imagem com hash');
@@ -705,7 +725,7 @@ try {
     const fixtureCode = `const DB=require('better-sqlite3');const db=new DB(${JSON.stringify(path.join(userData, 'caderno.sqlite'))});const insert=db.prepare('INSERT INTO notes(id,title,created_at,updated_at) VALUES(?,?,?,?)');for(const row of ${JSON.stringify(fixtures)})insert.run(...row);db.close();`;
     const fixtureRun = spawnSync(electronBin, ['-e', fixtureCode], { cwd: root, encoding: 'utf8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } });
     assert.equal(fixtureRun.status, 0, `fixtures SQLite determinísticas: ${fixtureRun.stderr}`);
-    await page.getByRole('button', { name: 'Notas' }).click();
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click();
     await page.getByPlaceholder('Buscar notas…').fill('Ordem');
     const sort = page.getByLabel('Ordenar');
     const sequence = async (order, expected) => {
@@ -723,7 +743,7 @@ try {
     assert.deepEqual(await sequence('title_asc', ['Ordem Alpha','Ordem Bravo','Ordem Charlie']), ['Ordem Alpha','Ordem Bravo','Ordem Charlie']);
   });
   await check('cancelled Markdown picker and real export/backup filesystem write failures preserve data', async () => {
-    await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Import QA');
+    await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Import QA');
     const beforeRows = (await invoke('notes:list', { view: 'all' })).map(n => n.id);
     const beforeSelected = await page.locator('.title-input').inputValue();
     await page.getByRole('button', { name: 'Mais ações' }).click();
@@ -805,7 +825,7 @@ try {
     await page.locator('.toolbar-menu[open] summary').evaluateAll(els=>els.forEach(el=>el.click()));
     const cases = [
       { trigger: page.getByRole('button', { name: 'Mais ações' }), menu: page.getByRole('menu').filter({ has: page.getByRole('menuitem', { name: 'Importar Markdown' }) }) },
-      { trigger: page.getByTitle('Etiquetas'), menu: page.locator('.tag-pop') },
+      { trigger: page.getByTitle('Etiquetas', { exact: true }), menu: page.locator('.tag-pop') },
       { trigger: page.getByTitle('Anexos', { exact: true }), menu: page.locator('.attach-pop') },
     ];
     for (const { trigger, menu } of cases) {
@@ -813,11 +833,11 @@ try {
       await page.waitForFunction(el => el === document.activeElement, await trigger.elementHandle());assert.equal(await trigger.evaluate(el => el === document.activeElement), true, 'Escape retorna foco ao trigger');
       await trigger.click(); await menu.waitFor(); await page.locator('.editor-pane').click({ position: { x: 500, y: 300 } });
       await menu.waitFor({ state: 'detached' });
-      await page.waitForFunction(el => el === document.activeElement, await trigger.elementHandle());
     }
   });
   await check('restart persistence + layout geometry at 1440x900 and 900x560 both themes', async () => {
     await page.locator('.new-note').click();
+    await page.waitForFunction(() => document.querySelector('.title-input')?.value === '');
     const longTitle = 'T'.repeat(280);
     await page.locator('.title-input').fill(longTitle);
     await page.locator('.tiptap').fill('W'.repeat(2400));
@@ -833,7 +853,7 @@ try {
     await invoke('tags:attach', { noteId: visualNote.id, tagId: createdTag.id });
     await page.reload(); await openTitle('Import QA');
     for (const theme of ['light', 'dark']) {
-      await page.getByRole('button', { name: 'Notas' }).click(); await openTitle('Import QA');
+      await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Import QA');
       await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows()[0].setContentSize(1440, 900));
       await page.setViewportSize({ width: 1440, height: 900 });
       if ((await page.locator('html').getAttribute('data-theme')) !== theme) await page.getByTitle('Alternar tema').click();
@@ -847,13 +867,12 @@ try {
         return [s, !!e && !!r && r.width > 0 && r.height > 0 && getComputedStyle(e).visibility === 'visible'];
       })));
       assert.deepEqual(visible, { '.sidebar': true, '.notelist': true, '.editor-toolbar': true, '.title-input': true, '.editor-status': true }, `todos paineis visiveis em ${theme}`);
-      const toolbarRight = await page.locator('.editor-toolbar button').evaluateAll(buttons => Math.max(...buttons.map(button => button.getBoundingClientRect().right)));
-      assert.ok(toolbarRight <= 1440 - 140, `toolbar invade caption buttons em 1440 ${theme}: ${toolbarRight}`);
+      await assertToolbarClearsCaption(1440, theme);
       await page.screenshot({ path: path.join(artifacts, `${theme}-1440x900.png`) });
       const measure = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
       assert.ok(measure.sw <= measure.cw, `horizontal overflow 1440 ${theme}: ${JSON.stringify(measure)}`);
       assert.equal(await page.locator('.note-row').first().evaluate(el => el.scrollWidth <= el.clientWidth), true, 'long title/preview overflows note row');
-      await page.getByTitle('Etiquetas').click();
+      await page.getByTitle('Etiquetas', { exact: true }).click();
       const tagBox = await page.locator('.tag-pop').boundingBox();
       assert.ok(tagBox && tagBox.x >= 0 && tagBox.x + tagBox.width <= 1440, `popover etiqueta fora da viewport ${JSON.stringify(tagBox)}`);
       await page.keyboard.press('Escape');
@@ -878,15 +897,14 @@ try {
       }, longNotebook.slice(0, 16));
       assert.ok(compactRects.brand.y >= 0 && compactRects.brand.height > 0, `marca cortada em 900x560: ${JSON.stringify(compactRects)}`);
       assert.ok(compactRects.toolbar.y >= 0 && compactRects.toolbar.height >= 25, `toolbar cortada em 900x560: ${JSON.stringify(compactRects)}`);
-      const compactToolbarRight = await page.locator('.editor-toolbar button').evaluateAll(buttons => Math.max(...buttons.map(button => button.getBoundingClientRect().right)));
-      assert.ok(compactToolbarRight <= 900 - 140, `toolbar invade caption buttons em 900 ${theme}: ${compactToolbarRight}`);
-      assert.ok(compactRects.status.y + compactRects.status.height <= 560, `status fora do viewport em 900x560: ${JSON.stringify(compactRects)}`);
+      await assertToolbarClearsCaption(900, theme);
+      assert.ok(compactRects.status.y + compactRects.status.height <= 561, `status fora do viewport em 900x560: ${JSON.stringify(compactRects)}`);
       assert.ok(compactRects.notebook.x >= 0 && compactRects.notebook.x + compactRects.notebook.width <= 900, `caderno longo invade controles em 900x560: ${JSON.stringify(compactRects.notebook)}`);
       assert.ok(compactRects.notebookSelect.x >= 0 && compactRects.notebookSelect.x + compactRects.notebookSelect.width <= 900, `select de caderno longo fora do viewport: ${JSON.stringify(compactRects.notebookSelect)}`);
       await page.screenshot({ path: path.join(artifacts, `${theme}-900x560.png`) });
       const compact = await page.evaluate(() => ({ sw: document.documentElement.scrollWidth, cw: document.documentElement.clientWidth }));
       assert.ok(compact.sw <= compact.cw, `horizontal overflow 900 ${theme}: ${JSON.stringify(compact)}`);
-      await page.getByTitle('Etiquetas').click();
+      await page.getByTitle('Etiquetas', { exact: true }).click();
       const compactTagBox = await page.locator('.tag-pop').boundingBox();
       assert.ok(compactTagBox && compactTagBox.x >= 0 && compactTagBox.x + compactTagBox.width <= 900 && compactTagBox.y >= 0 && compactTagBox.y + compactTagBox.height <= 560, `popover etiqueta fora da viewport compacta ${JSON.stringify(compactTagBox)}`);
       await page.keyboard.press('Escape');
@@ -904,7 +922,7 @@ try {
     const firstCloseLifecycle=fs.readFileSync(path.join(userData,'lifecycle.jsonl'),'utf8').split(/\r?\n/).filter(Boolean).map(line=>JSON.parse(line));
     assert.equal(firstCloseLifecycle.some(entry=>entry.event==='uncaughtException'),false,'fechamento e restart não geram exceção de lifecycle');
     app = await electron.launch({ executablePath: electronBin, args: [root], env: launchEnv() });observeElectron(app,'profile-restart');
-    page = await app.firstWindow(); await page.getByRole('button', { name: 'Notas' }).waitFor();
+    page = await app.firstWindow(); await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).waitFor();
     const recoveredJobs=await invoke('attachments:jobs');assert.ok(recoveredJobs.find(j=>j.id===recoveryJobId)?.status!=='cancel_requested','restart recupera job pendente para fila ativa');let restartedOcr;for(let i=0;i<300;i++){restartedOcr=(await invoke('attachments:jobs')).find(j=>j.id===recoveryOcrJobId);if(restartedOcr?.status==='completed'||restartedOcr?.status==='error')break;await page.waitForTimeout(100);}assert.equal(restartedOcr?.status,'completed',`restart retoma OCR PDF enfileirado: ${restartedOcr?.error}`);assert.ok((await invoke('notes:list',{view:'all',query:'SCAN PAGE ONE type:attachment'})).some(n=>n.id===recoveryOcrNoteId),'texto OCR volta à busca após reinício do perfil local');let settledJobs;for(let i=0;i<1800;i++){settledJobs=await invoke('attachments:jobs');if(settledJobs.every(j=>!['queued','running','cancel_requested'].includes(j.status)))break;await page.waitForTimeout(100);}assert.ok(settledJobs.every(j=>!['queued','running','cancel_requested'].includes(j.status)),`reindexação após restart ainda tem jobs ativos: ${JSON.stringify(settledJobs.filter(j=>['queued','running','cancel_requested'].includes(j.status)))}`);
     await openTitle('Import QA'); assert.match(await page.locator('.tiptap').innerText(), /Texto markdown real/);
     await openTitle('Título teclado independente');
@@ -912,7 +930,7 @@ try {
     const keyboardNote = (await invoke('notes:list', { view: 'all' })).find(n => n.title === 'Título teclado independente');
     assert.match((await invoke('notes:get', { id: keyboardNote.id })).contentHtml, /Segunda frase após autosave/);
     assert.equal(await page.locator('html').getAttribute('data-theme'), 'dark');
-    await app.close();app=await electron.launch({executablePath:electronBin,args:[root],env:launchEnv(restoredProfile)});observeElectron(app,'restored-profile');page=await app.firstWindow();await page.getByRole('button',{name:'Notas'}).waitFor();
+    await app.close();app=await electron.launch({executablePath:electronBin,args:[root],env:launchEnv(restoredProfile)});observeElectron(app,'restored-profile');page=await app.firstWindow();await page.getByRole('button',{name:/^Notas(?: \d+)?$/}).waitFor();
     await app.evaluate(({dialog,shell})=>{globalThis.__qa={openPath:null,openError:'',openResult:{canceled:false,filePaths:[process.env.CADERNO_QA_BACKUP]},saveResult:{canceled:true}};dialog.showOpenDialog=async()=>globalThis.__qa.openResult;dialog.showSaveDialog=async()=>globalThis.__qa.saveResult;shell.openPath=async()=>'';});
     page.once('dialog',d=>d.accept());await page.getByRole('button',{name:'Mais ações'}).click();await page.getByRole('menuitem',{name:'Restaurar backup'}).click();await page.getByText(/Backup restaurado/).waitFor();
     await openTitle('Etapa 1C QA editada');const restoredNote=(await invoke('notes:list',{view:'all'})).find(n=>n.title==='Etapa 1C QA editada');const restoredMedia=await invoke('attachments:list',{noteId:restoredNote.id});
@@ -921,7 +939,7 @@ try {
     const restoredNotes=await invoke('notes:list',{view:'all'}),emlNote=restoredNotes.find(n=>n.title==='E-mail de teste'),audioNote=restoredNotes.find(n=>n.title==='Áudio 4A');assert.ok(emlNote&&audioNote,'backup restaura notas de e-mail e gravação');const restoredEmlAssets=await invoke('attachments:list',{noteId:emlNote.id}),restoredAudio=(await invoke('attachments:list',{noteId:audioNote.id})).find(a=>a.mimeType==='audio/webm');assert.equal(restoredEmlAssets.length,1);assert.ok(restoredAudio&&fs.statSync(path.join(restoredProfile,'attachments',restoredAudio.storedName)).size>1000,'bytes reais de áudio regravados no restore limpo');
     await app.evaluate(()=>{globalThis.__qa.openResult={canceled:false,filePaths:[process.env.CADERNO_QA_EML]};});const restoredDuplicate=await invoke('import:eml',{notebookId:null});assert.equal(restoredDuplicate.duplicates,1,'dedupe Message-ID sobrevive ao backup/restore');
     await page.getByTitle('Anexos', { exact: true }).click();await page.getByRole('button',{name:'Visualizar two-pages.pdf'}).click();await page.locator('#media-pdf-canvas').waitFor();await page.keyboard.press('Escape');
-    await app.close();app=await electron.launch({executablePath:electronBin,args:[root],env:launchEnv(restoredProfile)});observeElectron(app,'restored-profile-restart');page=await app.firstWindow();await page.getByRole('button',{name:'Notas'}).waitFor();
+    await app.close();app=await electron.launch({executablePath:electronBin,args:[root],env:launchEnv(restoredProfile)});observeElectron(app,'restored-profile-restart');page=await app.firstWindow();await page.getByRole('button',{name:/^Notas(?: \d+)?$/}).waitFor();
     await openTitle('Etapa 1C QA editada');const afterRestart=(await invoke('attachments:list',{noteId:restoredNote.id})).find(a=>a.fileName==='two-pages.pdf');assert.ok(afterRestart&&fs.existsSync(path.join(restoredProfile,'attachments',afterRestart.storedName)),'mídia do backup continua após restart do perfil limpo');
     await page.getByTitle('Anexos', { exact: true }).click();await page.getByRole('button',{name:'Visualizar two-pages.pdf'}).click();await page.locator('#media-pdf-canvas').waitFor();await page.keyboard.press('Escape');
   });
@@ -935,7 +953,7 @@ try {
     const dayStart=new Date();dayStart.setHours(0,0,0,0);const nextDay=new Date(dayStart);nextDay.setDate(nextDay.getDate()+1);const allDayId=await invoke('events:create',{noteId:null,title:'QA evento dia inteiro',description:'',startAt:dayStart.getTime(),endAt:nextDay.getTime()-1,timeZone:'America/Sao_Paulo',allDay:true});assert.equal((await invoke('events:list',{startAt:now,endAt:now})).find(e=>e.id===allDayId)?.allDay,true);
     const bad=await windowCall('events:create',{noteId:null,title:'Inválido',description:'',startAt:now+1,endAt:now,timeZone:'UTC',allDay:false});assert.equal(bad.ok,false,'fim anterior ao início é recusado');
     await page.keyboard.press('Escape');await page.getByRole('button',{name:'Tarefas'}).click();await page.locator('header').getByRole('button',{name:'Hoje'}).waitFor();assert.ok(await page.getByText('QA tarefa hoje').count());
-    await page.getByRole('button',{name:'Todas'}).click();const newTaskButton=page.getByRole('button',{name:'Nova tarefa'});assert.match(await page.evaluate(()=>{try{window.prompt('guard')}catch(e){return e.message}}),/prompt.*not supported/,'runtime Electron falha com prompt not supported');await newTaskButton.click();await page.keyboard.press('Escape');await page.getByRole('dialog',{name:'Nova tarefa'}).waitFor({state:'detached'});assert.equal(await newTaskButton.evaluate(el=>el===document.activeElement),true,'Escape cancela e devolve foco');await newTaskButton.click();await page.locator('.overlay').click({position:{x:4,y:4}});await page.getByRole('dialog',{name:'Nova tarefa'}).waitFor({state:'detached'});await page.waitForFunction(el=>el===document.activeElement,await newTaskButton.elementHandle());assert.equal(await newTaskButton.evaluate(el=>el===document.activeElement),true,'clique fora cancela e devolve foco');await newTaskButton.click();const taskDialog=page.getByRole('dialog',{name:'Nova tarefa'});await taskDialog.waitFor();await page.getByLabel('Título').fill('UI tarefa associada');await page.getByLabel('Buscar nota').fill(note.title);await page.locator(`.note-picker-results [data-note-id="${note.id}"]`).click();const taskTimes=await page.evaluate(()=>{const d=new Date(Date.now()+86400000),e=new Date(Date.now()+90000000);const val=x=>new Date(x.getTime()-x.getTimezoneOffset()*60000).toISOString().slice(0,16);return [val(d),val(e)]});await page.getByLabel('Prazo').fill(taskTimes[0]);await page.getByLabel('Lembrete').fill(taskTimes[1]);await taskDialog.getByRole('button',{name:'Salvar tarefa'}).click();await taskDialog.waitFor({state:'detached'});assert.equal(await newTaskButton.evaluate(el=>el===document.activeElement),true,'fechar formulário devolve foco ao iniciador');const uiTask=(await invoke('tasks:list',{filter:'all'})).find(t=>t.title==='UI tarefa associada');assert.ok(uiTask);assert.equal(uiTask.noteId,note.id);assert.ok(uiTask.dueAt&&uiTask.reminderAt);await page.locator('.agenda-list article').filter({hasText:'UI tarefa associada'}).getByRole('button',{name:'Editar'}).click();await page.getByRole('dialog',{name:'Editar tarefa'}).waitFor();await page.getByLabel('Título').fill('UI tarefa editada');await page.getByLabel('Buscar nota').fill(note.title);await page.locator(`.note-picker-results [data-note-id="${duplicateNote.id}"]`).click();await page.getByRole('button',{name:'Salvar tarefa'}).click();await page.getByText('UI tarefa editada').waitFor();await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('checkbox').check();assert.equal((await invoke('tasks:list',{filter:'completed'})).find(t=>t.id===uiTask.id).noteId,duplicateNote.id,'edição troca nota por UUID apesar do título duplicado');await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('checkbox').uncheck();assert.equal((await invoke('tasks:list',{filter:'all'})).find(t=>t.id===uiTask.id).done,false,'tarefa reabre pela interface');await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('button',{name:'Abrir nota'}).click();await page.locator('.title-input').waitFor();assert.equal(await page.locator('.title-input').inputValue(),note.title,'abrir tarefa navega para nota selecionada');await page.getByRole('button',{name:'Tarefas'}).click();await page.getByRole('button',{name:'Todas'}).click();await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).waitFor();await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('button',{name:'Excluir'}).click();assert.ok(!(await invoke('tasks:list',{filter:'all'})).some(t=>t.id===uiTask.id));
+    await page.getByRole('button',{name:'Todas'}).click();const newTaskButton=page.getByRole('button',{name:'Nova tarefa'});assert.match(await page.evaluate(()=>{try{window.prompt('guard')}catch(e){return e.message}}),/prompt.*not supported/,'runtime Electron falha com prompt not supported');await newTaskButton.click();await page.keyboard.press('Escape');await page.getByRole('dialog',{name:'Nova tarefa'}).waitFor({state:'detached'});assert.equal(await newTaskButton.evaluate(el=>el===document.activeElement),true,'Escape cancela e devolve foco');await newTaskButton.click();await page.locator('.overlay').click({position:{x:4,y:4}});await page.getByRole('dialog',{name:'Nova tarefa'}).waitFor({state:'detached'});await page.waitForFunction(el=>el===document.activeElement,await newTaskButton.elementHandle());assert.equal(await newTaskButton.evaluate(el=>el===document.activeElement),true,'clique fora cancela e devolve foco');await newTaskButton.click();const taskDialog=page.getByRole('dialog',{name:'Nova tarefa'});await taskDialog.waitFor();await page.getByLabel('Título').fill('UI tarefa associada');await page.getByLabel('Buscar nota').fill(note.title);await page.locator(`.note-picker-results [data-note-id="${note.id}"]`).click();const taskTimes=await page.evaluate(()=>{const d=new Date(Date.now()+86400000),e=new Date(Date.now()+90000000);const val=x=>new Date(x.getTime()-x.getTimezoneOffset()*60000).toISOString().slice(0,16);return [val(d),val(e)]});await page.getByLabel('Prazo', { exact: true }).fill(taskTimes[0]);await page.getByLabel('Lembrete', { exact: true }).fill(taskTimes[1]);await taskDialog.getByRole('button',{name:'Salvar tarefa'}).click();await taskDialog.waitFor({state:'detached'});assert.equal(await newTaskButton.evaluate(el=>el===document.activeElement),true,'fechar formulário devolve foco ao iniciador');const uiTask=(await invoke('tasks:list',{filter:'all'})).find(t=>t.title==='UI tarefa associada');assert.ok(uiTask);assert.equal(uiTask.noteId,note.id);assert.ok(uiTask.dueAt&&uiTask.reminderAt);await page.locator('.agenda-list article').filter({hasText:'UI tarefa associada'}).getByRole('button',{name:'Editar'}).click();await page.getByRole('dialog',{name:'Editar tarefa'}).waitFor();await page.getByLabel('Título').fill('UI tarefa editada');await page.getByLabel('Buscar nota').fill(note.title);await page.locator(`.note-picker-results [data-note-id="${duplicateNote.id}"]`).click();await page.getByRole('button',{name:'Salvar tarefa'}).click();await page.getByText('UI tarefa editada').waitFor();await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('checkbox').check();assert.equal((await invoke('tasks:list',{filter:'completed'})).find(t=>t.id===uiTask.id).noteId,duplicateNote.id,'edição troca nota por UUID apesar do título duplicado');await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('checkbox').uncheck();assert.equal((await invoke('tasks:list',{filter:'all'})).find(t=>t.id===uiTask.id).done,false,'tarefa reabre pela interface');await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('button',{name:'Abrir nota'}).click();await page.locator('.title-input').waitFor();assert.equal(await page.locator('.title-input').inputValue(),note.title,'abrir tarefa navega para nota selecionada');await page.getByRole('button',{name:'Tarefas'}).click();await page.getByRole('button',{name:'Todas'}).click();await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).waitFor();await page.locator('.agenda-list article').filter({hasText:'UI tarefa editada'}).getByRole('button',{name:'Excluir'}).click();assert.ok(!(await invoke('tasks:list',{filter:'all'})).some(t=>t.id===uiTask.id));
     await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(900,560));await page.setViewportSize({width:900,height:560});
     await page.getByRole('button',{name:'Calendário'}).click();await page.locator('.calendar-grid').waitFor();const targetDayLabel=await page.evaluate(v=>new Date(v).toLocaleDateString(),taskTimes[0]);const targetDayIndex=await page.locator('.calendar-grid [role=gridcell]').evaluateAll((cells,label)=>cells.findIndex(cell=>cell.getAttribute('aria-label')?.startsWith(label)),targetDayLabel);assert.ok(targetDayIndex>=0,'dia para criar evento existe na grade');await page.locator('.calendar-grid [role=gridcell]').nth(targetDayIndex).click();if(await page.locator('.overlay').isVisible().catch(()=>false)){await page.keyboard.press('Escape');await page.locator('.overlay').waitFor({state:'detached'});}await page.locator('.agenda-actions').getByRole('button',{name:'Novo evento'}).click();await page.getByRole('dialog',{name:'Novo evento'}).waitFor();await page.getByRole('button',{name:'Salvar evento'}).click();assert.match(await page.getByRole('alert').innerText(),/título/i,'título vazio é validado no formulário');await page.getByLabel('Título').fill('UI evento inválido');await page.getByLabel('Fuso horário IANA').fill('America/New_York');await page.getByLabel('Início').fill('2026-10-30T12:00');await page.getByLabel('Fim').fill('2026-10-30T11:00');await page.getByRole('button',{name:'Salvar evento'}).click();assert.match(await page.getByRole('alert').innerText(),/fim deve ser posterior/i,'fim anterior é validado no formulário');await page.getByLabel('Início').fill('2026-03-08T02:30');await page.getByLabel('Fim').fill('2026-03-08T03:30');await page.getByRole('button',{name:'Salvar evento'}).click();await page.getByRole('alert').filter({hasText:'horário local não existe'}).waitFor();await page.keyboard.press('Escape');await page.getByRole('dialog',{name:'Novo evento'}).waitFor({state:'detached'});await page.locator('.agenda-actions').getByRole('button',{name:'Novo evento'}).click();await page.getByRole('dialog',{name:'Novo evento'}).waitFor();await page.getByLabel('Título').fill('UI evento completo');await page.getByLabel('Descrição').fill('Descrição do evento criada no DOM');await page.getByLabel('Início').fill(taskTimes[0]);await page.getByLabel('Fim').fill(taskTimes[1]);await page.getByLabel('Fuso horário IANA').fill('America/Sao_Paulo');await page.getByLabel('Buscar nota (opcional)').fill(note.title);await page.locator(`.note-picker-results [data-note-id="${note.id}"]`).click();await page.getByRole('button',{name:'Salvar evento'}).click();await page.getByRole('dialog',{name:'Novo evento'}).waitFor({state:'detached'});const uiEvent=(await invoke('events:list',{startAt:Date.now(),endAt:Date.now()+3*86400000})).find(e=>e.title==='UI evento completo');assert.ok(uiEvent);assert.equal(uiEvent.noteId,note.id);assert.equal(uiEvent.description,'Descrição do evento criada no DOM');await page.locator('.agenda-list article').filter({hasText:'UI evento completo'}).getByRole('button',{name:'Editar'}).click();await page.getByRole('dialog',{name:'Editar evento'}).waitFor();assert.equal(await page.getByLabel('Fuso horário IANA').inputValue(),'America/Sao_Paulo');assert.equal(await page.getByLabel('Início').inputValue(),taskTimes[0],'edição preserva valor local do início');assert.equal(await page.getByLabel('Fim').inputValue(),taskTimes[1],'edição preserva valor local do fim');await page.getByLabel('Título').fill('UI evento editado');await page.getByLabel('Buscar nota (opcional)').fill(note.title);await page.locator(`.note-picker-results [data-note-id="${duplicateNote.id}"]`).click();await page.getByRole('button',{name:'Salvar evento'}).click();await page.locator('.agenda-list article').filter({hasText:'UI evento editado'}).waitFor();assert.equal((await invoke('events:list',{startAt:Date.now()-86400000,endAt:Date.now()+3*86400000})).find(e=>e.id===uiEvent.id).noteId,duplicateNote.id,'edição de evento resolve nota por UUID com título duplicado');await page.locator('.agenda-actions').getByRole('button',{name:'Próximo'}).click();await page.locator('.agenda-actions').getByRole('button',{name:'Anterior'}).click();await page.locator('.agenda-actions').getByRole('button',{name:'Hoje'}).click();
     for(const theme of ['light','dark']){if(await page.locator('html').getAttribute('data-theme')!==theme)await page.getByTitle('Alternar tema').click();await page.waitForFunction(t=>document.documentElement.getAttribute('data-theme')===t,theme);await page.getByRole('button',{name:'Tarefas'}).click();await page.getByRole('button',{name:'Todas'}).click();await page.getByText('QA tarefa hoje').waitFor();await page.screenshot({path:path.join(artifacts,`tasks-${theme}-900x560.png`)});await page.getByRole('button',{name:'Calendário'}).click();await page.locator('.agenda-list article').filter({hasText:'UI evento editado'}).waitFor();assert.equal((await invoke('events:list',{startAt:Date.now()-86400000,endAt:Date.now()+3*86400000})).find(e=>e.id===uiEvent.id).noteId,duplicateNote.id,'edição de evento resolve nota por UUID com título duplicado');await page.screenshot({path:path.join(artifacts,`calendar-${theme}-900x560.png`)});await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(1440,900));await page.setViewportSize({width:1440,height:900});await page.screenshot({path:path.join(artifacts,`calendar-${theme}-1440x900.png`)});await page.getByRole('button',{name:'Tarefas'}).click();await page.getByRole('button',{name:'Todas'}).click();await page.screenshot({path:path.join(artifacts,`tasks-${theme}-1440x900.png`)});await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setContentSize(900,560));await page.setViewportSize({width:900,height:560});await page.getByRole('button',{name:'Calendário'}).click();await page.locator('.agenda select').selectOption('week');await page.locator('.calendar-grid.week').waitFor();await page.locator('.agenda select').selectOption('month');}

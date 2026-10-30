@@ -8,7 +8,7 @@ const PREVIEW_CSP = "default-src 'none'; img-src data:; style-src 'unsafe-inline
 const PREVIEW_CSS = "body{font:13px/1.55 'Segoe UI',system-ui,sans-serif;color:#27272a;background:#fff;margin:12px;overflow-wrap:anywhere}h1,h2,h3{margin:.8em 0 .3em}table{border-collapse:collapse;width:100%;table-layout:fixed}th,td{border:1px solid #bbb;padding:4px 6px}th{background:#f1f1f3}ul[data-type=taskList]{list-style:none;padding-left:2px}ul[data-type=taskList] li{display:flex;gap:6px}img{max-width:100%;height:auto}blockquote{border-left:3px solid #1b4ed8;margin:8px 0;padding:0 12px;color:#555}.template-asset-card{border:1px solid #ccc;border-radius:6px;padding:8px;margin:8px 0}.template-asset-card span,.template-asset-card small{display:block;color:#666}";
 const previewDoc = (html: string) => `<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="${PREVIEW_CSP}"><style>${PREVIEW_CSS}</style></head><body>${html}</body></html>`;
 
-export function TemplatePickerDialog({ notebookId, onClose, onCreated }: { notebookId: number | null; onClose: () => void; onCreated: (noteId: string) => void | Promise<void> }) {
+export function TemplatePickerDialog({ notebookId, folderId = null, onClose, onCreated }: { notebookId: number | null; folderId?: string | null; onClose: () => void; onCreated: (noteId: string) => void | Promise<void> }) {
   const root = useDialogFocus(true, onClose);
   const [query, setQuery] = useState("");
   const [items, setItems] = useState<NoteTemplateMeta[]>([]);
@@ -33,7 +33,7 @@ export function TemplatePickerDialog({ notebookId, onClose, onCreated }: { noteb
     if (!selected || busy) return;
     setBusy(true); setError("");
     try {
-      const note = await client.applyTemplate(selected.id, notebookId);
+      const note = await client.applyTemplate(selected.id, notebookId, folderId);
       if (!note) throw new Error("A nota não foi criada.");
       onClose();
       await onCreated(note.id);

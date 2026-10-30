@@ -4,6 +4,7 @@ import {
   NoteMeta,
   NoteView,
   Notebook,
+  NoteFolder,
   SidebarCounts,
   SortOrder,
   Tag,
@@ -16,6 +17,7 @@ export type Selection =
   | { kind: "trash" }
   | { kind: "unfiled" }
   | { kind: "notebook"; notebookId: number }
+  | { kind: "folder"; notebookId: number; folderId: string }
   | { kind: "tag"; tagId: number };
 
 export interface AppState {
@@ -24,6 +26,7 @@ export interface AppState {
   openNoteId: string | null;
   openNote: NoteFull | null;
   notebooks: Notebook[];
+  folders: NoteFolder[];
   tags: Tag[];
   counts: SidebarCounts;
   theme: "light" | "dark";
@@ -46,6 +49,7 @@ export type Action =
   | { type: "notes"; notes: NoteMeta[] }
   | { type: "openNote"; note: NoteFull | null; noteId: string | null }
   | { type: "notebooks"; notebooks: Notebook[] }
+  | { type: "folders"; folders: NoteFolder[] }
   | { type: "tags"; tags: Tag[] }
   | { type: "counts"; counts: SidebarCounts }
   | { type: "theme"; theme: "light" | "dark" }
@@ -62,6 +66,7 @@ const initialState: AppState = {
   openNoteId: null,
   openNote: null,
   notebooks: [],
+  folders: [],
   tags: [],
   counts: { all: 0, favorites: 0, trash: 0, unfiled: 0 },
   theme: "light",
@@ -86,6 +91,8 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, openNote: action.note, openNoteId: action.noteId };
     case "notebooks":
       return { ...state, notebooks: action.notebooks };
+    case "folders":
+      return { ...state, folders: action.folders };
     case "tags":
       return { ...state, tags: action.tags };
     case "counts":
@@ -122,7 +129,7 @@ const StoreCtx = createContext<StoreApi | null>(null);
 
 export function selectionToQuery(state: AppState) {
   const sel = state.selection;
-  const base: { view: NoteView; notebookId?: number; tagId?: number; query?: string; order?: SortOrder } =
+  const base: { view: NoteView; notebookId?: number; tagId?: number; folderId?: string; query?: string; order?: SortOrder } =
     sel.kind === "all"
       ? { view: "all" }
       : sel.kind === "favorites"
@@ -133,7 +140,9 @@ export function selectionToQuery(state: AppState) {
             ? { view: "unfiled" as NoteView }
             : sel.kind === "notebook"
               ? { view: "notebook", notebookId: sel.notebookId }
-              : { view: "tag", tagId: sel.tagId };
+              : sel.kind === "folder"
+                ? { view: "folder", notebookId: sel.notebookId, folderId: sel.folderId }
+                : { view: "tag", tagId: sel.tagId };
   if (state.search.trim()) base.query = state.search.trim();
   base.order = state.orderBy;
   return base;
@@ -148,12 +157,14 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
 
   refreshMetaRef.current = async () => {
     try {
-      const [notebooks, tags, counts] = await Promise.all([
+      const [notebooks, tags, counts, folders] = await Promise.all([
         client.listNotebooks(),
         client.listTags(),
         client.counts(),
+        client.listFolders(),
       ]);
       dispatch({ type: "notebooks", notebooks });
+      dispatch({ type: "folders", folders });
       dispatch({ type: "tags", tags });
       dispatch({ type: "counts", counts });
     } catch (err) {

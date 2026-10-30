@@ -345,7 +345,7 @@ describe("BackupRepo", () => {
     sourceNotes.update(note.id,{contentHtml:`<img src="caderno-asset://${image.storedName}" data-asset-id="${image.storedName}" alt="pixel">`});
     const sourceTasks=new TasksRepo(sourceDb),sourceEvents=new EventsRepo(sourceDb),taskId=sourceTasks.create({noteId:note.id,title:'Backup task',dueAt:100,reminderAt:null}),eventId=sourceEvents.create({noteId:note.id,title:'Backup event',description:'',startAt:100,endAt:200,timeZone:'UTC',allDay:false});
     sourceNotes.recordClipSource(note.id,"https://example.test/article","Article");
-    const backup=new BackupRepo(sourceDb,sourceDir).dump();expect(backup.schemaVersion).toBe(8);expect(backup.attachments).toHaveLength(1);expect(backup.clipperSources).toHaveLength(1);
+    const backup=new BackupRepo(sourceDb,sourceDir).dump();expect(backup.schemaVersion).toBe(9);expect(backup.attachments).toHaveLength(1);expect(backup.clipperSources).toHaveLength(1);
     expect(backup.tasks).toHaveLength(1);expect(backup.events).toHaveLength(1);
     const targetDb=openDatabase({database:path.join(root,"dest.sqlite"),attachments:destDir}),targetBackup=new BackupRepo(targetDb,destDir);
     const corrupt=structuredClone(backup);corrupt.attachments![0].sha256="0".repeat(64);

@@ -2,7 +2,7 @@ import { nextOccurrence } from '../../shared/recurrence';
 import { localDateTimeInZone } from '../../shared/zoned-time';
 import type { ChannelInputs, Task } from '../../shared/ipc';
 import Database from "better-sqlite3";
-import { NoteFull, NoteMeta, ListNotesQuery, Notebook, Tag, SidebarCounts, SortOrder, NotebookStack, NoteLinkTarget, AttachmentJob } from "../../shared/ipc";
+import { NoteFull, NoteMeta, ListNotesQuery, Notebook, Tag, SidebarCounts, SortOrder, NotebookStack, NoteFolder, NoteLinkTarget, AttachmentJob } from "../../shared/ipc";
 import { extractPreviewHtml, extractVisibleText } from "./db";
 import crypto from "node:crypto";
 import fs from "node:fs";
@@ -13,6 +13,7 @@ import { normalizeTagName, tagKey } from "../../shared/tags";
 interface NoteRow {
   id: string;
   notebook_id: number | null;
+  folder_id?: string | null;
   title: string;
   content_html: string;
   content_text: string;
@@ -36,7 +37,7 @@ const ORDER: Record<SortOrder, string> = {
   title_asc: "title COLLATE NOCASE ASC",
 };
 
-const META_COLS = `n.id, n.notebook_id, n.title, n.favorited, n.pinned, n.deleted_at, n.created_at, n.updated_at, n.content_text`;
+const META_COLS = `n.id, n.notebook_id, n.folder_id, n.title, n.favorited, n.pinned, n.deleted_at, n.created_at, n.updated_at, n.content_text`;
 
 function tagsForNotes(db: Database.Database, ids: string[]): Map<string, { id: number; name: string }[]> {
   const out = new Map<string, { id: number; name: string }[]>();
@@ -61,6 +62,7 @@ function toMeta(db: Database.Database, rows: NoteRow[]): NoteMeta[] {
   return rows.map(r => ({
     id: r.id,
     notebookId: r.notebook_id,
+    folderId: r.folder_id ?? null,
     title: r.title,
     favorited: r.favorited === 1,
     pinned: r.pinned === 1,
@@ -87,6 +89,10 @@ export class NotesRepo {
     if (q.view === "notebook" && q.notebookId !== undefined) {
       where.push("n.notebook_id = ?");
       params.push(q.notebookId);
+    }
+    if (q.view === "folder" && q.folderId) {
+      where.push("n.folder_id = ?");
+      params.push(q.folderId);
     }
     if (q.view === "unfiled") {
       where.push("n.notebook_id IS NULL");
@@ -198,17 +204,19 @@ export class NotesRepo {
     return this.get(id);
   }
 
-  create(input: { notebookId?: number | null; title?: string; contentHtml?: string }): NoteFull {
+  create(input: { notebookId?: number | null; folderId?: string | null; title?: string; contentHtml?: string }): NoteFull {
     const id = uuid();
     const now = Date.now();
+    const placed = this.resolveFolder(input.notebookId ?? null, input.folderId ?? null);
     this.db
       .prepare(
-        `INSERT INTO notes (id, notebook_id, title, content_html, content_text, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO notes (id, notebook_id, folder_id, title, content_html, content_text, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         id,
-        input.notebookId ?? null,
+        placed.notebookId,
+        placed.folderId,
         input.title ?? "",
         input.contentHtml ?? "",
         input.contentHtml ? extractVisibleText(input.contentHtml) : "",
@@ -227,8 +235,32 @@ export class NotesRepo {
     this.db.prepare("INSERT INTO clipper_sources(source_key,note_id,source_url,source_title,captured_at) VALUES(?,?,?,?,?)").run(crypto.createHash("sha256").update(sourceUrl).digest("hex"), noteId, sourceUrl, sourceTitle, Date.now());
   }
 
+  /** A pasta só permanece se pertencer ao caderno de destino. Sem caderno, a nota fica sem pasta. */
+  private resolveFolder(notebookId: number | null, folderId: string | null): { notebookId: number | null; folderId: string | null } {
+    if (!folderId) return { notebookId, folderId: null };
+    const folder = this.db.prepare("SELECT notebook_id AS notebookId FROM note_folders WHERE id=?").get(folderId) as { notebookId: number } | undefined;
+    if (!folder) throw new Error("Pasta não encontrada.");
+    if (notebookId !== null && notebookId !== folder.notebookId) throw new Error("A pasta não pertence a este caderno.");
+    return { notebookId: folder.notebookId, folderId };
+  }
+
   move(id: string, notebookId: number | null): NoteFull | null {
-    this.db.prepare("UPDATE notes SET notebook_id = ?, updated_at = ? WHERE id = ?").run(notebookId, Date.now(), id);
+    this.db.prepare(`UPDATE notes SET notebook_id=?, folder_id=CASE
+        WHEN ? IS NULL THEN NULL
+        WHEN EXISTS (SELECT 1 FROM note_folders f WHERE f.id=notes.folder_id AND f.notebook_id=?) THEN folder_id
+        ELSE NULL END, updated_at=? WHERE id=?`).run(notebookId, notebookId, notebookId, Date.now(), id);
+    return this.get(id);
+  }
+
+  moveToFolder(id: string, folderId: string | null): NoteFull | null {
+    if (!this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(id)) return null;
+    if (folderId === null) {
+      this.db.prepare("UPDATE notes SET folder_id=NULL, updated_at=? WHERE id=?").run(Date.now(), id);
+      return this.get(id);
+    }
+    const folder = this.db.prepare("SELECT notebook_id AS notebookId FROM note_folders WHERE id=?").get(folderId) as { notebookId: number } | undefined;
+    if (!folder) return null;
+    this.db.prepare("UPDATE notes SET notebook_id=?, folder_id=?, updated_at=? WHERE id=?").run(folder.notebookId, folderId, Date.now(), id);
     return this.get(id);
   }
 
@@ -419,6 +451,41 @@ export class NotebookStacksRepo {
     return this.list().find(x=>x.id===id) ?? null;
   }
   delete(id: string): boolean { return this.db.prepare("DELETE FROM notebook_stacks WHERE id=?").run(id).changes > 0; }
+}
+
+export class NoteFoldersRepo {
+  constructor(private db: Database.Database) {}
+  list(): NoteFolder[] {
+    return this.db.prepare(`SELECT f.id, f.notebook_id AS notebookId, f.name, f.sort_order AS sortOrder, f.created_at AS createdAt, f.updated_at AS updatedAt,
+      (SELECT COUNT(*) FROM notes n WHERE n.folder_id=f.id AND n.deleted_at IS NULL) AS noteCount
+      FROM note_folders f ORDER BY f.sort_order, f.name COLLATE NOCASE`).all() as unknown as NoteFolder[];
+  }
+  create(notebookId: number, name: string): NoteFolder | null {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 120) return null;
+    const id = uuid(), now = Date.now();
+    const sort = ((this.db.prepare("SELECT COALESCE(MAX(sort_order), -1) AS m FROM note_folders WHERE notebook_id=?").get(notebookId) as { m: number } | undefined)?.m ?? -1) + 1;
+    try { this.db.prepare("INSERT INTO note_folders(id,notebook_id,name,sort_order,created_at,updated_at) VALUES(?,?,?,?,?,?)").run(id, notebookId, trimmed, sort, now, now); }
+    catch (e) {
+      if (e instanceof Error && e.message.includes("UNIQUE")) return null;
+      if (e instanceof Error && e.message.includes("FOREIGN KEY")) throw new Error("Caderno não encontrado.");
+      throw e;
+    }
+    return this.list().find(x => x.id === id) ?? null;
+  }
+  rename(id: string, name: string): NoteFolder | null {
+    const trimmed = name.trim();
+    if (!trimmed || trimmed.length > 120) return null;
+    try {
+      const n = this.db.prepare("UPDATE note_folders SET name=?, updated_at=? WHERE id=?").run(trimmed, Date.now(), id);
+      if (!n.changes) return null;
+    } catch (e) {
+      if (e instanceof Error && e.message.includes("UNIQUE")) return null;
+      throw e;
+    }
+    return this.list().find(x => x.id === id) ?? null;
+  }
+  delete(id: string): boolean { return this.db.prepare("DELETE FROM note_folders WHERE id=?").run(id).changes > 0; }
 }
 
 export class TagsRepo {

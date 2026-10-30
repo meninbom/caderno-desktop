@@ -5,6 +5,7 @@ import type {
   NoteMeta,
   Notebook,
   NotebookStack,
+  NoteFolder,
   NoteLinkTarget,
   SidebarCounts,
   Tag,
@@ -40,9 +41,10 @@ export interface CadernoClient {
   savePdfAnnotation(x:ChannelInputs['pdf:save']):Promise<string>;
   deletePdfAnnotation(id:string):Promise<boolean>;
   findNotes(query: string, limit?: number): Promise<NoteLinkTarget[]>;
-  createNote(input: { notebookId?: number | null; title?: string; contentHtml?: string }): Promise<NoteFull>;
+  createNote(input: { notebookId?: number | null; folderId?: string | null; title?: string; contentHtml?: string }): Promise<NoteFull>;
   updateNote(id: string, patch: { title?: string; contentHtml?: string }): Promise<NoteFull | null>;
   moveNote(id: string, notebookId: number | null): Promise<NoteFull | null>;
+  moveNoteToFolder(id: string, folderId: string | null): Promise<NoteFull | null>;
   setFavorite(id: string, value: boolean): Promise<NoteFull | null>;
   setPinned(id: string, value: boolean): Promise<NoteFull | null>;
   deleteNote(id: string): Promise<NoteFull | null>;
@@ -58,6 +60,10 @@ export interface CadernoClient {
   createStack(name: string): Promise<NotebookStack | null>;
   renameStack(id: string, name: string): Promise<NotebookStack | null>;
   deleteStack(id: string): Promise<boolean>;
+  listFolders(): Promise<NoteFolder[]>;
+  createFolder(notebookId: number, name: string): Promise<NoteFolder | null>;
+  renameFolder(id: string, name: string): Promise<NoteFolder | null>;
+  deleteFolder(id: string): Promise<boolean>;
   listTags(): Promise<Tag[]>;
   createTag(name: string): Promise<Tag | null>;
   renameTag(id: number, name: string): Promise<Tag | null>;
@@ -75,8 +81,8 @@ export interface CadernoClient {
   deleteAttachment(noteId: string, attachmentId: number): Promise<boolean>;
   openAttachment(noteId: string, attachmentId: number): Promise<{ filePath: string; fileName: string } | null>;
   exportMarkdown(noteId: string): Promise<{ canceled?: boolean; filePath?: string } | null>;
-  importMarkdown(items: { fileName: string; content: string }[], notebookId: number | null): Promise<{ created: number }>;
-  importEml(notebookId: number | null): Promise<{canceled?:boolean;created:number;duplicates:number;attachments:number;errors:string[]}>;
+  importMarkdown(items: { fileName: string; content: string }[], notebookId: number | null, folderId?: string | null): Promise<{ created: number }>;
+  importEml(notebookId: number | null, folderId?: string | null): Promise<{canceled?:boolean;created:number;duplicates:number;attachments:number;errors:string[]}>;
   saveBackup(): Promise<{ canceled?: boolean; filePath?: string } | null>;
   restoreBackup(): Promise<{ canceled?: boolean } | BackupRestoreResult>;
   meta(): Promise<AppMeta>;
@@ -89,7 +95,7 @@ export interface CadernoClient {
   createTemplateFromNote(x:{noteId:string;name:string;description?:string;noteTitle?:string}):Promise<TemplateSaveResult>;
   updateTemplate(x:{id:string;name?:string;description?:string;noteTitle?:string}):Promise<NoteTemplateMeta|null>;
   deleteTemplate(id:string):Promise<boolean>;
-  applyTemplate(id:string,notebookId?:number|null):Promise<NoteFull|null>;
+  applyTemplate(id:string,notebookId?:number|null,folderId?:string|null):Promise<NoteFull|null>;
   restoreBuiltinTemplates():Promise<number>;
   exportBegin(noteId:string,format:'pdf'|'html'):Promise<{canceled:true}|ExportBeginReady>;
   exportFinish(x:ChannelInputs['export:finish']):Promise<ExportFinishResult>;

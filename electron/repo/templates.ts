@@ -189,10 +189,18 @@ export class TemplatesRepo {
    * novos antes da transação; se qualquer passo falhar, a transação desfaz o
    * banco e os arquivos recém-criados são removidos. Nada existente é tocado.
    */
-  apply(id: string, notebookId: number | null, now = new Date()): string {
+  apply(id: string, notebookId: number | null, now = new Date(), folderId: string | null = null): string {
     const row = this.row(id);
     if (!row) throw new Error("Modelo não encontrado.");
     if (notebookId !== null && !this.db.prepare("SELECT 1 FROM notebooks WHERE id=?").get(notebookId)) notebookId = null;
+    let resolvedFolder: string | null = null;
+    if (folderId) {
+      const folder = this.db.prepare("SELECT notebook_id AS notebookId FROM note_folders WHERE id=?").get(folderId) as { notebookId: number } | undefined;
+      if (!folder) throw new Error("Pasta não encontrada.");
+      if (notebookId !== null && notebookId !== folder.notebookId) throw new Error("A pasta não pertence a este caderno.");
+      notebookId = folder.notebookId;
+      resolvedFolder = folderId;
+    }
     const assets = this.db.prepare("SELECT * FROM note_template_assets WHERE template_id=? ORDER BY rowid").all(id) as AssetRow[];
     const written: string[] = [];
     const planned = new Map<string, { asset: AssetRow; storedName: string; attachmentId?: number }>();
@@ -210,7 +218,7 @@ export class TemplatesRepo {
       const date = todayLabel(now);
       const noteId = crypto.randomUUID(), stamp = now.getTime();
       this.db.transaction(() => {
-        this.db.prepare("INSERT INTO notes(id,notebook_id,title,content_html,content_text,created_at,updated_at) VALUES(?,?,?,?,?,?,?)").run(noteId, notebookId, row.note_title.replace(/\{\{data\}\}/g, date).slice(0, 300), "", "", stamp, stamp);
+        this.db.prepare("INSERT INTO notes(id,notebook_id,folder_id,title,content_html,content_text,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)").run(noteId, notebookId, resolvedFolder, row.note_title.replace(/\{\{data\}\}/g, date).slice(0, 300), "", "", stamp, stamp);
         const insert = this.db.prepare("INSERT INTO attachments(note_id,file_name,stored_name,byte_size,created_at,mime_type,sha256,kind) VALUES(?,?,?,?,?,?,?,?)");
         const annotate = this.db.prepare("INSERT INTO pdf_annotations(id,attachment_id,page,kind,rect,comment,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)");
         for (const item of planned.values()) {

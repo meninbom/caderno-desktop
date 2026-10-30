@@ -1,6 +1,6 @@
 # Caderno
 
-Versão **0.12.0**. Modelos de notas, consulta lado a lado, exportação PDF/HTML e seletores de cor do texto e marca-texto. Busca geral e comandos com **Ctrl+K**, referências entre notas, marcações de PDF e tarefas recorrentes com prioridade. Os relatórios históricos descrevem versões anteriores; modelos de voz, dados pessoais, instaladores e evidências locais não fazem parte do repositório.
+Versão **0.12.2**. Pastas de notas dentro dos cadernos, modelos de notas, consulta lado a lado, exportação PDF/HTML e seletores de cor do texto e marca-texto. Busca geral e comandos com **Ctrl+K**, referências entre notas, marcações de PDF e tarefas recorrentes com prioridade. Os relatórios históricos descrevem versões anteriores; modelos de voz, dados pessoais, instaladores e evidências locais não fazem parte do repositório.
 
 Aplicativo **desktop** de anotações para Windows, inspirado nos fluxos de
 organização do Evernote e com visual limpo e minimalista (próximo ao T3 Code).

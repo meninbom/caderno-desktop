@@ -201,6 +201,22 @@ const MIGRATIONS = [
       CREATE TABLE note_template_assets(template_id TEXT NOT NULL REFERENCES note_templates(id) ON DELETE CASCADE,token TEXT NOT NULL,file_name TEXT NOT NULL,mime_type TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('image','file')),sha256 TEXT NOT NULL,byte_size INTEGER NOT NULL,data BLOB NOT NULL,annotations TEXT NOT NULL DEFAULT '[]',PRIMARY KEY(template_id,token));`);
     seedBuiltinTemplates(db);
   } },
+  { version: 13, up(db: Database.Database): void {
+    // Pastas pertencem a um caderno. Excluir a pasta desvincula as notas (SET NULL)
+    // e as mantém no mesmo caderno. Excluir o caderno remove as pastas.
+    db.exec(`CREATE TABLE note_folders (
+        id TEXT PRIMARY KEY,
+        notebook_id INTEGER NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+        name TEXT NOT NULL COLLATE NOCASE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        UNIQUE (notebook_id, name)
+      );
+      ALTER TABLE notes ADD COLUMN folder_id TEXT REFERENCES note_folders(id) ON DELETE SET NULL;
+      CREATE INDEX idx_notes_folder ON notes(folder_id);
+      CREATE INDEX idx_note_folders_notebook ON note_folders(notebook_id, sort_order, name COLLATE NOCASE);`);
+  } },
 ];
 
 export function preparePaths(files: RepositoryFiles): void {

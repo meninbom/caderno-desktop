@@ -4,7 +4,7 @@
  */
 import { z } from "zod";
 
-export const NoteView = z.enum(["all", "favorites", "trash", "notebook", "tag", "unfiled"]);
+export const NoteView = z.enum(["all", "favorites", "trash", "notebook", "tag", "unfiled", "folder"]);
 export type NoteView = z.infer<typeof NoteView>;
 
 export const SortOrder = z.enum(["updated_desc", "updated_asc", "created_desc", "title_asc"]);
@@ -13,6 +13,7 @@ export type SortOrder = z.infer<typeof SortOrder>;
 export interface NoteMeta {
   id: string;
   notebookId: number | null;
+  folderId: string | null;
   title: string;
   favorited: boolean;
   pinned: boolean;
@@ -43,6 +44,7 @@ export interface Notebook {
 }
 
 export interface NotebookStack { id: string; name: string; sortOrder: number; notebookCount: number; noteCount: number; createdAt: number; updatedAt: number }
+export interface NoteFolder { id: string; notebookId: number; name: string; sortOrder: number; noteCount: number; createdAt: number; updatedAt: number }
 export interface NoteLinkTarget { id: string; title: string; preview: string }
 export interface PdfAnnotation { id:string; storedName:string; page:number; kind:"highlight"|"comment"; rect:{x:number;y:number;width:number;height:number}; comment:string; createdAt:number; updatedAt:number }
 export interface Task { recurrence?:import("./recurrence").Recurrence; priority?:import("./recurrence").Priority; timeZone?:string; id:string; noteId:string; noteTitle:string; title:string; done:boolean; dueAt:number|null; reminderAt:number|null; reminderState:'pending'|'delivered'; createdAt:number; updatedAt:number }
@@ -58,6 +60,7 @@ export interface ListNotesQuery {
   view: NoteView;
   notebookId?: number;
   tagId?: number;
+  folderId?: string;
   query?: string;
   order?: SortOrder;
 }
@@ -70,18 +73,20 @@ export interface SidebarCounts {
 }
 
 // z.guid() preserves Zod 3's permissive UUID-like contract across the v4 migration.
-const IdSchema = z.guid();
+export const IdSchema = z.guid();
 
 export const ListNotesQuerySchema = z.object({
   view: NoteView,
   notebookId: z.number().int().optional(),
   tagId: z.number().int().optional(),
+  folderId: z.guid().optional(),
   query: z.string().max(500).optional(),
   order: SortOrder.optional().default("updated_desc"),
-});
+}).refine(q => q.view !== "folder" || typeof q.folderId === "string", "Informe a pasta.");
 
 export const CreateNoteInputSchema = z.object({
   notebookId: z.number().int().nullable().optional(),
+  folderId: z.guid().nullable().optional(),
   title: z.string().max(300).optional(),
   contentHtml: z.string().max(2_000_000).optional(),
 });
@@ -94,6 +99,9 @@ export const UpdateNoteInputSchema = z.object({
 
 export const IdInputSchema = z.object({ id: IdSchema });
 export const MoveNoteInputSchema = z.object({ id: IdSchema, notebookId: z.number().int().nullable() });
+export const MoveNoteFolderInputSchema = z.object({ id: IdSchema, folderId: IdSchema.nullable() });
+export const CreateFolderInputSchema = z.object({ notebookId: z.number().int().positive(), name: z.string().trim().min(1).max(120) });
+export const RenameFolderInputSchema = z.object({ id: IdSchema, name: z.string().trim().min(1).max(120) });
 export const FlagInputSchema = z.object({ id: IdSchema, value: z.boolean() });
 
 export const CreateNotebookInputSchema = z.object({ name: z.string().min(1).max(120) });
@@ -128,9 +136,10 @@ export const SaveImageInputSchema = z.object({ noteId:IdSchema, name:z.string().
 
 export const ImportMarkdownInputSchema = z.object({
   notebookId: z.number().int().nullable(),
+  folderId: IdSchema.optional(),
   items: z.array(z.object({ fileName: z.string(), content: z.string().max(2_000_000) })).max(500),
 });
-export const ImportEmlInputSchema = z.object({ notebookId:z.number().int().nullable() });
+export const ImportEmlInputSchema = z.object({ notebookId:z.number().int().nullable(), folderId: IdSchema.optional() });
 
 export const RestoreInputSchema = z.object({ json: z.string().max(100_000_000) });
 export const SaveFileDialogInputSchema = z.object({ title: z.string().min(1).max(200), defaultName: z.string().min(1).max(260) });
@@ -150,7 +159,7 @@ export const TemplateNameSchema = z.string().trim().min(1, "Dê um nome ao model
 export const TemplateListSchema = z.object({ query: z.string().trim().max(200).optional() });
 export const TemplateFromNoteSchema = z.object({ noteId: IdSchema, name: TemplateNameSchema, description: z.string().trim().max(500).optional().default(""), noteTitle: z.string().max(300).optional() });
 export const TemplateUpdateSchema = z.object({ id: IdSchema, name: TemplateNameSchema.optional(), description: z.string().trim().max(500).optional(), noteTitle: z.string().max(300).optional() });
-export const TemplateApplySchema = z.object({ id: IdSchema, notebookId: z.number().int().positive().nullable().optional() });
+export const TemplateApplySchema = z.object({ id: IdSchema, notebookId: z.number().int().positive().nullable().optional(), folderId: IdSchema.optional() });
 
 export const ExportFormatSchema = z.enum(["pdf", "html"]);
 export type ExportFormat = z.infer<typeof ExportFormatSchema>;
@@ -182,6 +191,7 @@ export interface ChannelInputs {
   "notes:create": z.infer<typeof CreateNoteInputSchema>;
   "notes:update": z.infer<typeof UpdateNoteInputSchema>;
   "notes:move": z.infer<typeof MoveNoteInputSchema>;
+  "notes:moveToFolder": z.infer<typeof MoveNoteFolderInputSchema>;
   "notes:favorite": z.infer<typeof FlagInputSchema>;
   "notes:pin": z.infer<typeof FlagInputSchema>;
   "notes:delete": z.infer<typeof IdInputSchema>;
@@ -197,6 +207,10 @@ export interface ChannelInputs {
   "stacks:create": z.infer<typeof StackNameInputSchema>;
   "stacks:rename": z.infer<typeof RenameStackInputSchema>;
   "stacks:delete": z.infer<typeof StackIdInputSchema>;
+  "folders:list": null;
+  "folders:create": z.infer<typeof CreateFolderInputSchema>;
+  "folders:rename": z.infer<typeof RenameFolderInputSchema>;
+  "folders:delete": z.infer<typeof StackIdInputSchema>;
   "tags:list": null;
   "tags:create": z.infer<typeof CreateTagInputSchema>;
   "tags:rename": z.infer<typeof RenameTagInputSchema>;
