@@ -1,6 +1,6 @@
+import type { ChannelInputs, PdfAnnotation, NoteTemplateMeta, NoteTemplateFull, TemplateSaveResult, ExportBeginReady, ExportFinishResult } from '../../shared/ipc';
 /** Cliente tipado do renderer para a bridge Electron (contextIsolation on, nodeIntegration off). */
 import {
-  ChannelInputs,
   NoteFull,
   NoteMeta,
   Notebook,
@@ -29,7 +29,7 @@ function getBridge(): RendererBridge {
 }
 
 export class DesktopClient implements CadernoClient {
-  listTasks(filter:'today'|'upcoming'|'overdue'|'completed'|'all'):Promise<Task[]>{return this.call('tasks:list',{filter}) as Promise<Task[]>} createTask(x:{noteId:string;title:string;dueAt:number|null;reminderAt:number|null}):Promise<string>{return this.call('tasks:create',x) as Promise<string>} updateTask(x:{id:string;noteId?:string;title?:string;dueAt?:number|null;reminderAt?:number|null;done?:boolean}):Promise<boolean>{return this.call('tasks:update',x) as Promise<boolean>} deleteTask(id:string):Promise<boolean>{return this.call('tasks:delete',{id}) as Promise<boolean>}
+  listTasks(filter:'today'|'upcoming'|'overdue'|'completed'|'all',priority?:'all'|'low'|'normal'|'high'):Promise<Task[]>{return this.call('tasks:list',{filter,priority}) as Promise<Task[]>} createTask(x:ChannelInputs['tasks:create']):Promise<string>{return this.call('tasks:create',x) as Promise<string>} updateTask(x:ChannelInputs['tasks:update']):Promise<boolean>{return this.call('tasks:update',x) as Promise<boolean>} deleteTask(id:string):Promise<boolean>{return this.call('tasks:delete',{id}) as Promise<boolean>}
   listEvents(startAt:number,endAt:number):Promise<CalendarEvent[]>{return this.call('events:list',{startAt,endAt}) as Promise<CalendarEvent[]>} createEvent(x:{noteId:string|null;title:string;description:string;startAt:number;endAt:number;timeZone:string;allDay:boolean}):Promise<string>{return this.call('events:create',x) as Promise<string>} updateEvent(x:{id:string;noteId?:string|null;title?:string;description?:string;startAt?:number;endAt?:number;timeZone?:string;allDay?:boolean}):Promise<boolean>{return this.call('events:update',x) as Promise<boolean>} deleteEvent(id:string):Promise<boolean>{return this.call('events:delete',{id}) as Promise<boolean>}
   private async call<K extends keyof ChannelInputs>(channel: K, input: ChannelInputs[K] | null): Promise<unknown> {
     const res = await getBridge().invoke(channel, input);
@@ -43,6 +43,11 @@ export class DesktopClient implements CadernoClient {
   getNote(id: string): Promise<NoteFull | null> {
     return this.call("notes:get", { id }) as Promise<NoteFull | null>;
   }
+  searchNotes(query:string,limit=50):Promise<NoteMeta[]>{return this.call('notes:search',{query,limit}) as Promise<NoteMeta[]>;}
+  backlinks(id:string):Promise<NoteLinkTarget[]>{return this.call('notes:backlinks',{id}) as Promise<NoteLinkTarget[]>;}
+  listPdfAnnotations(storedName:string,page:number):Promise<PdfAnnotation[]>{return this.call('pdf:list',{storedName,page}) as Promise<PdfAnnotation[]>;}
+  savePdfAnnotation(x:ChannelInputs['pdf:save']):Promise<string>{return this.call('pdf:save',x) as Promise<string>;}
+  deletePdfAnnotation(id:string):Promise<boolean>{return this.call('pdf:delete',{id}) as Promise<boolean>;}
   findNotes(query: string, limit = 20): Promise<NoteLinkTarget[]> { return this.call("notes:find", { query, limit }) as Promise<NoteLinkTarget[]>; }
   createNote(input: ChannelInputs["notes:create"]): Promise<NoteFull> {
     return this.call("notes:create", input) as Promise<NoteFull>;
@@ -93,6 +98,12 @@ export class DesktopClient implements CadernoClient {
   }
   createTag(name: string): Promise<Tag | null> {
     return this.call("tags:create", { name }) as Promise<Tag | null>;
+  }
+  renameTag(id: number, name: string): Promise<Tag | null> {
+    return this.call("tags:rename", { id, name }) as Promise<Tag | null>;
+  }
+  deleteTag(id: number): Promise<boolean> {
+    return this.call("tags:delete", { id }) as Promise<boolean>;
   }
   attachTag(noteId: string, tagId: number): Promise<boolean> {
     return this.call("tags:attach", { noteId, tagId }) as Promise<boolean>;
@@ -147,6 +158,16 @@ export class DesktopClient implements CadernoClient {
   enableClipper():Promise<{port:number}>{return this.call("clipper:enable",null) as Promise<{port:number}>}
   pairClipper():Promise<{code:string;nonce:string;expiresAt:number}>{return this.call("clipper:pair",null) as Promise<{code:string;nonce:string;expiresAt:number}>}
   revokeClipper():Promise<boolean>{return this.call("clipper:revoke",null) as Promise<boolean>}
+  listTemplates(query=""):Promise<NoteTemplateMeta[]>{return this.call("templates:list",{query}) as Promise<NoteTemplateMeta[]>}
+  getTemplate(id:string):Promise<NoteTemplateFull|null>{return this.call("templates:get",{id}) as Promise<NoteTemplateFull|null>}
+  createTemplateFromNote(x:{noteId:string;name:string;description?:string;noteTitle?:string}):Promise<TemplateSaveResult>{return this.call("templates:create-from-note",{description:"",...x}) as Promise<TemplateSaveResult>}
+  updateTemplate(x:{id:string;name?:string;description?:string;noteTitle?:string}):Promise<NoteTemplateMeta|null>{return this.call("templates:update",x) as Promise<NoteTemplateMeta|null>}
+  deleteTemplate(id:string):Promise<boolean>{return this.call("templates:delete",{id}) as Promise<boolean>}
+  applyTemplate(id:string,notebookId:number|null=null):Promise<NoteFull|null>{return this.call("templates:apply",{id,notebookId}) as Promise<NoteFull|null>}
+  restoreBuiltinTemplates():Promise<number>{return this.call("templates:restore-builtins",null) as Promise<number>}
+  exportBegin(noteId:string,format:'pdf'|'html'):Promise<{canceled:true}|ExportBeginReady>{return this.call("export:begin",{noteId,format}) as Promise<{canceled:true}|ExportBeginReady>}
+  exportFinish(x:ChannelInputs['export:finish']):Promise<ExportFinishResult>{return this.call("export:finish",x) as Promise<ExportFinishResult>}
+  exportAbort(token:string):Promise<boolean>{return this.call("export:abort",{token}) as Promise<boolean>}
 }
 
 export const client: CadernoClient = hasDesktopBridge() ? new DesktopClient() : new WebClient();

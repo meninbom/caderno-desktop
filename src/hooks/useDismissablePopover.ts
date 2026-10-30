@@ -9,17 +9,20 @@ export function useDismissablePopover(open: boolean, close: () => void) {
   useEffect(() => {
     if (!open) return;
     let dismissed = false;
-    const dismiss = () => {
+    const dismiss = (restoreFocus: boolean) => {
       if (dismissed) return;
       dismissed = true;
       closeRef.current();
-      requestAnimationFrame(() => triggerRef.current?.focus());
+      if (restoreFocus) requestAnimationFrame(() => triggerRef.current?.focus());
     };
     const onPointerDown = (event: PointerEvent) => {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) dismiss();
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) dismiss(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") { event.preventDefault(); dismiss(); }
+      if (event.defaultPrevented) return;
+      const modal = event.target instanceof Element ? event.target.closest('[aria-modal="true"]') : null;
+      if (modal && rootRef.current && !modal.contains(rootRef.current)) return;
+      if (event.key === "Escape") { event.preventDefault(); dismiss(true); }
     };
     document.addEventListener("pointerdown", onPointerDown, true);
     document.addEventListener("keydown", onKeyDown, true);

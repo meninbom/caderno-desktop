@@ -1,32 +1,29 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import Link from "@tiptap/extension-link";
-import TaskList from "@tiptap/extension-task-list";
-import TaskItem from "@tiptap/extension-task-item";
 import Placeholder from "@tiptap/extension-placeholder";
-import Table from "@tiptap/extension-table";
-import TableRow from "@tiptap/extension-table-row";
-import TableHeader from "@tiptap/extension-table-header";
-import TableCell from "@tiptap/extension-table-cell";
-import Underline from "@tiptap/extension-underline";
-import Highlight from "@tiptap/extension-highlight";
-import TextStyle from "@tiptap/extension-text-style";
-import Color from "@tiptap/extension-color";
-import TextAlign from "@tiptap/extension-text-align";
-import Image from "@tiptap/extension-image";
+import { FONT_GROUPS, MIXED_FONT, selectionFontFamily } from "../editor/fonts";
+import { buildNoteExtensions } from "../editor/extensions";
 import fixWebmDuration from "fix-webm-duration";
 import { MediaPreview, type PreviewAttachment } from "./MediaPreview";
-import { Tag as TagType } from "../../shared/ipc";
 import {
   Bold, Italic, Code, List, ListOrdered, SquareCheck, Quote, Link2, CodeXml,
   Heading1, Heading2, Heading3, Undo2, Redo2, Star, Pin, RotateCcw, Trash2, AudioLines,
-  Paperclip, X, FileDown, CheckSquare, NotebookPen, Tag as TagIcon, Book, Table2, ImagePlus, Underline as UnderlineIcon, Highlighter, AlignLeft, AlignCenter, AlignRight, Mic,
+  Paperclip, X, FileDown, Columns2, BookmarkPlus, FileText, FileCode2, NotebookPen, Book, Table2, ImagePlus, Underline as UnderlineIcon, AlignLeft, AlignCenter, AlignRight, Mic, Type, Ellipsis,
 } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { client } from "../api/client";
 import { useDismissablePopover } from "../hooks/useDismissablePopover";
 import { TaskDialog } from "./AgendaDialogs";
+import { WritingLayoutControl } from "./WritingLayoutControl";
+import type { Appearance } from "../state/appearance";
+import { NoteBacklinks } from "./NoteBacklinks";
+import { NoteTags } from "./NoteTags";
+import { NotePicker } from "./NotePicker";
+import { useDialogFocus } from "../hooks/useDialogFocus";
+import { ReferencePane } from "./ReferencePane";
+import { SaveTemplateDialog } from "./TemplateDialogs";
+import { TextColorPicker } from "./TextColorPicker";
+import { exportNote } from "../export/exportNote";
 
 function ToolBtn({ on, title, onClick, children }: { on?: boolean; title: string; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -38,18 +35,17 @@ function ToolBtn({ on, title, onClick, children }: { on?: boolean; title: string
 
 const SAVE_DEBOUNCE_MS = 600;
 
-export function NoteEditor() {
+export function NoteEditor({ appearance, onAppearanceChange }: { appearance: Appearance; onAppearanceChange: (patch: Partial<Appearance>) => void }) {
   const { state, dispatch, refreshMeta, refreshNotes, openNote, saveNoteContent } = useAppStore();
   const note = state.openNote;
   const noteRef = useRef(note);
   noteRef.current = note;
   const pendingPatch = useRef<{ title?: string; contentHtml?: string }>({});
   const pendingForId = useRef<string | null>(null);
+  const saveInFlight = useRef<Promise<boolean> | null>(null);
   const saveTimer = useRef<number | null>(null);
   const [linkDialog, setLinkDialog] = useState(false);
   const [internalDialog, setInternalDialog] = useState(false);
-  const [noteQuery, setNoteQuery] = useState("");
-  const [linkTargets, setLinkTargets] = useState<{id:string;title:string;preview:string}[]>([]);
   const [selectedTarget, setSelectedTarget] = useState<{id:string;title:string}|null>(null);
   const [anchorText, setAnchorText] = useState("");
   const [linkUrl, setLinkUrl] = useState("");
@@ -60,17 +56,70 @@ export function NoteEditor() {
   const [taskDialog,setTaskDialog]=useState(false);
   const linkSelection = useRef<{ from: number; to: number } | null>(null);
   const linkInput = useRef<HTMLInputElement>(null);
+  const internalDialogRef = useDialogFocus(internalDialog, () => setInternalDialog(false));
+  const [referenceId, setReferenceId] = useState<string | null>(null);
+  const [referencePicker, setReferencePicker] = useState(false);
+  const [pickerTarget, setPickerTarget] = useState<{ id: string; title: string } | null>(null);
+  const [saveTemplateOpen, setSaveTemplateOpen] = useState(false);
+  const [exportMenu, setExportMenu] = useState(false);
+  const [exportStatus, setExportStatus] = useState<{ text: string; kind: "busy" | "ok" | "error" } | null>(null);
+  const exporting = useRef(false);
+  const referencePickerRef = useDialogFocus(referencePicker, () => setReferencePicker(false));
+  const exportPopover = useDismissablePopover(exportMenu, () => setExportMenu(false));
+  const [refWidth, setRefWidth] = useState<number>(() => { const v = Number(localStorage.getItem("caderno.reference.width")); return Number.isFinite(v) && v >= 240 ? v : 420; });
+  const splitRef = useRef<HTMLDivElement>(null);
+  const clampRef = (value: number) => { const total = splitRef.current?.clientWidth ?? 1200; return Math.round(Math.min(Math.max(240, value), Math.max(240, total - 360))); };
+  const setRefWidthPersist = (value: number) => { const next = clampRef(value); setRefWidth(next); try { localStorage.setItem("caderno.reference.width", String(next)); } catch { /* preferência opcional */ } };
 
   const flushSave = useCallback(async () => {
+    while (saveInFlight.current) {
+      const previous = saveInFlight.current;
+      const saved = await previous;
+      if (saveInFlight.current === previous) saveInFlight.current = null;
+      if (!saved) return false;
+    }
     const id = pendingForId.current;
     pendingForId.current = null;
     const patch = pendingPatch.current;
     pendingPatch.current = {};
-    if (!id) return;
-    if (patch.title === undefined && patch.contentHtml === undefined) return;
-    await saveNoteContent(id, patch);
-    await refreshNotes();
+    if (!id) return true;
+    if (patch.title === undefined && patch.contentHtml === undefined) return true;
+    const work = (async () => {
+      const saved = await saveNoteContent(id, patch);
+      if (!saved) {
+        // Falha: devolve a edição à fila para não perder o texto e deixa o chamador saber.
+        if (pendingForId.current === null || pendingForId.current === id) { pendingForId.current = id; pendingPatch.current = { ...patch, ...pendingPatch.current }; }
+        return false;
+      }
+      await refreshNotes();
+      return true;
+    })();
+    saveInFlight.current = work;
+    try { return await work; }
+    finally { if (saveInFlight.current === work) saveInFlight.current = null; }
   }, [saveNoteContent, refreshNotes]);
+
+  useEffect(()=>{const flush=(event:Event)=>{const detail=(event as CustomEvent<{resolve:()=>void;reject:(error:unknown)=>void}>).detail;void flushSave().then(ok=>ok?detail.resolve():detail.reject(new Error('Não foi possível salvar a nota antes de continuar.')),detail.reject)};window.addEventListener('caderno:flush-editor',flush);return()=>window.removeEventListener('caderno:flush-editor',flush)},[flushSave]);
+
+  const runExport = useCallback(async (format: "pdf" | "html") => {
+    const current = noteRef.current;
+    if (!current || exporting.current) return;
+    exporting.current = true; setExportMenu(false);
+    setExportStatus({ text: `Preparando ${format.toUpperCase()}…`, kind: "busy" });
+    try {
+      const result = await exportNote(current.id, format);
+      if (result.canceled) setExportStatus(null);
+      else setExportStatus({ text: `${format.toUpperCase()} salvo em ${result.filePath}${result.warnings.length ? ` (${result.warnings.length} aviso(s): ${result.warnings[0]})` : ""}`, kind: "ok" });
+    } catch (error) { setExportStatus({ text: `Falha ao exportar ${format.toUpperCase()}: ${(error as Error).message}`, kind: "error" }); }
+    finally { exporting.current = false; }
+  }, []);
+  useEffect(() => {
+    const exportEvent = (event: Event) => { const format = (event as CustomEvent<"pdf" | "html">).detail; if (format === "pdf" || format === "html") void runExport(format); };
+    const templateEvent = () => { if (noteRef.current && noteRef.current.deletedAt === null) setSaveTemplateOpen(true); };
+    const referenceEvent = () => { if (noteRef.current) setReferencePicker(true); };
+    window.addEventListener("caderno:export-note", exportEvent); window.addEventListener("caderno:save-template", templateEvent); window.addEventListener("caderno:pick-reference", referenceEvent);
+    return () => { window.removeEventListener("caderno:export-note", exportEvent); window.removeEventListener("caderno:save-template", templateEvent); window.removeEventListener("caderno:pick-reference", referenceEvent); };
+  }, [runExport]);
 
   const scheduleSave = useCallback((title?: string, contentHtml?: string) => {
     const current = noteRef.current;
@@ -84,26 +133,7 @@ export function NoteEditor() {
   }, [flushSave, dispatch]);
 
   const editor = useEditor({
-    extensions: [
-      StarterKit.configure({ heading: { levels: [1, 2, 3] } }),
-      Link.configure({ openOnClick: false, autolink: true, isAllowedUri: (url, ctx) => url.startsWith("caderno-note://") || ctx.defaultValidate(url) }),
-      TaskList,
-      TaskItem.configure({ nested: true }),
-      Table.configure({ resizable:true }), TableRow, TableHeader, TableCell,
-      Underline, Highlight.configure({ multicolor:true }), TextStyle, Color,
-      TextAlign.configure({ types:["heading","paragraph"] }),
-      Image.extend({
-        addAttributes() {
-          const attrs = this.parent?.() ?? {};
-          return {
-            ...attrs,
-            src: { default: null, parseHTML: el => { const value = el.getAttribute("src") || ""; return value.startsWith("caderno-asset://") ? value : null; }, renderHTML: attrs => ({ src: attrs.src }) },
-            assetId: { default: null, parseHTML: el => el.getAttribute("data-asset-id"), renderHTML: attrs => attrs.assetId ? { "data-asset-id": attrs.assetId } : {} },
-          };
-        },
-      }).configure({ inline: false, allowBase64: false }),
-      Placeholder.configure({ placeholder: "Escreva algo…" }),
-    ],
+    extensions: [...buildNoteExtensions(), Placeholder.configure({ placeholder: "Escreva algo…" })],
     content: note?.contentHtml ?? "",
     onUpdate: ({ editor }) => scheduleSave(undefined, editor.getHTML()),
     onBlur: () => { if (saveTimer.current !== null) { window.clearTimeout(saveTimer.current); void flushSave(); } },
@@ -132,7 +162,7 @@ export function NoteEditor() {
         const destination = await client.getNote(match[1]);
         if (!destination) { dispatch({ type: "error", message: "O destino deste link não existe mais; a nota pode ter sido excluída definitivamente." }); return; }
         if (destination.deletedAt !== null) { dispatch({ type: "error", message: `A nota “${destination.title || "Sem título"}” está na lixeira. Restaure-a para abrir o destino.` }); return; }
-        await flushSave();
+        if (!(await flushSave())) return;
         await openNote(match[1]);
       })();
     };
@@ -173,11 +203,11 @@ export function NoteEditor() {
     closeLinkDialog();
   };
 
-  const openInternalLinkDialog = async () => {
+  const openInternalLinkDialog = () => {
     const selection = editor!.state.selection;
     linkSelection.current = { from: selection.from, to: selection.to };
     setAnchorText(selection.empty ? "" : editor!.state.doc.textBetween(selection.from, selection.to, " "));
-    setSelectedTarget(null); setNoteQuery(""); setLinkTargets(await client.findNotes("")); setInternalDialog(true);
+    setSelectedTarget(null); setInternalDialog(true);
   };
   const insertInternalLink = () => {
     const target = selectedTarget;
@@ -187,6 +217,7 @@ export function NoteEditor() {
     const href = `caderno-note://${target.id}`;
     editor!.chain().focus().insertContentAt(selection, [{ type: "text", text, marks: [{ type: "link", attrs: { href, target: null, class: null, rel: null, style: null, title: null } }] }]).run();
     setInternalDialog(false);
+    requestAnimationFrame(() => editor!.commands.focus());
   };
   const removeCurrentLink = () => {
     const selection=linkSelection.current;
@@ -202,10 +233,17 @@ export function NoteEditor() {
   };
   useEffect(()=>{if(!editor)return;const dom=editor.view.dom;const raster=(dt:DataTransfer|null)=>{if(!dt)return null;const files=[...dt.files];for(const item of [...dt.items])if(item.kind==="file"){const f=item.getAsFile();if(f&&!files.includes(f))files.push(f);}return files.find(x=>x.type.startsWith("image/"))??null;};const paste=(e:ClipboardEvent)=>{const f=raster(e.clipboardData);if(f){e.preventDefault();void addImageFile(f);}};const drop=(e:DragEvent)=>{const f=raster(e.dataTransfer);if(f){e.preventDefault();void addImageFile(f);}};dom.addEventListener("paste",paste);dom.addEventListener("drop",drop);return()=>{dom.removeEventListener("paste",paste);dom.removeEventListener("drop",drop);};},[editor,note?.id]);
 
+  useEffect(() => {
+    const on = !document.documentElement.hasAttribute("data-no-spellcheck");
+    document.querySelectorAll(".ProseMirror, .title-input").forEach((el) => el.setAttribute("spellcheck", String(on)));
+  }, [editor, note?.id]);
+
   if (!note || !editor) {
     return <div className="editor-pane"><div className="editor-scroll"><div className="empty-state" style={{ margin: "18vh auto", maxWidth: 420 }}><NotebookPen size={24} strokeWidth={1.6} /><span>Selecione ou crie uma nota.</span></div></div></div>;
   }
   const inTrash = note.deletedAt !== null;
+  const fontFamily = selectionFontFamily(editor);
+  const knownFont = FONT_GROUPS.some(group => group.fonts.some(font => font.family === fontFamily));
 
   const deleteNote = async () => {
     saveTimer.current = null;
@@ -217,33 +255,12 @@ export function NoteEditor() {
 
   return (
     <div className="editor-pane">
-      {!inTrash && (
-        <div className="editor-toolbar" role="toolbar" aria-label="Formatação">
-          <ToolBtn title="Desfazer" onClick={() => chain().undo().run()}><Undo2 size={14} /></ToolBtn>
-          <ToolBtn title="Refazer" onClick={() => chain().redo().run()}><Redo2 size={14} /></ToolBtn>
-          <span className="sep" />
-          <ToolBtn title="Título 1" on={editor.isActive("heading", { level: 1 })} onClick={() => chain().toggleHeading({ level: 1 }).run()}><Heading1 size={14} /></ToolBtn>
-          <ToolBtn title="Título 2" on={editor.isActive("heading", { level: 2 })} onClick={() => chain().toggleHeading({ level: 2 }).run()}><Heading2 size={14} /></ToolBtn>
-          <ToolBtn title="Título 3" on={editor.isActive("heading", { level: 3 })} onClick={() => chain().toggleHeading({ level: 3 }).run()}><Heading3 size={14} /></ToolBtn>
-          <span className="sep" />
-          <ToolBtn title="Negrito (Ctrl+B)" on={editor.isActive("bold")} onClick={() => chain().toggleBold().run()}><Bold size={14} /></ToolBtn>
-          <ToolBtn title="Itálico (Ctrl+I)" on={editor.isActive("italic")} onClick={() => chain().toggleItalic().run()}><Italic size={14} /></ToolBtn>
-          <ToolBtn title="Código inline" on={editor.isActive("code")} onClick={() => chain().toggleCode().run()}><Code size={14} /></ToolBtn>
-          <details className="toolbar-menu"><summary title="Formatação adicional">Aa</summary><div className="toolbar-popover"><ToolBtn title="Sublinhar" on={editor.isActive("underline")} onClick={() => chain().toggleUnderline().run()}><UnderlineIcon size={14}/></ToolBtn><ToolBtn title="Destacar" on={editor.isActive("highlight")} onClick={() => chain().toggleHighlight({color:"#fff176"}).run()}><Highlighter size={14}/></ToolBtn><input aria-label="Cor do texto" type="color" defaultValue="#d64000" onInput={e=>chain().setColor(e.currentTarget.value).run()} /><ToolBtn title="Alinhar à esquerda" onClick={()=>chain().setTextAlign("left").run()}><AlignLeft size={14}/></ToolBtn><ToolBtn title="Centralizar" onClick={()=>chain().setTextAlign("center").run()}><AlignCenter size={14}/></ToolBtn><ToolBtn title="Alinhar à direita" onClick={()=>chain().setTextAlign("right").run()}><AlignRight size={14}/></ToolBtn></div></details>
-          <span className="sep" />
-          <ToolBtn title="Lista com marcadores" on={editor.isActive("bulletList")} onClick={() => chain().toggleBulletList().run()}><List size={14} /></ToolBtn>
-          <ToolBtn title="Lista numerada" on={editor.isActive("orderedList")} onClick={() => chain().toggleOrderedList().run()}><ListOrdered size={14} /></ToolBtn>
-          <ToolBtn title="Checklist" on={editor.isActive("taskList")} onClick={() => chain().toggleTaskList().run()}><SquareCheck size={14} /></ToolBtn>
-          <ToolBtn title="Citação" on={editor.isActive("blockquote")} onClick={() => chain().toggleBlockquote().run()}><Quote size={14} /></ToolBtn>
-          <ToolBtn title="Bloco de código" on={editor.isActive("codeBlock")} onClick={() => chain().toggleCodeBlock().run()}><CodeXml size={14} /></ToolBtn>
-          <details className="toolbar-menu"><summary title="Mais ferramentas">⋯</summary><div className="toolbar-popover toolbar-tools-popover">
-            <ToolBtn title="Link" onClick={openLinkDialog}><Link2 size={14}/></ToolBtn><ToolBtn title="Link para nota" onClick={()=>void openInternalLinkDialog()}><NotebookPen size={14}/></ToolBtn>
-            <span className="sep"/><ToolBtn title="Inserir tabela" onClick={()=>chain().insertTable({rows:3,cols:3,withHeaderRow:true}).run()}><Table2 size={14}/></ToolBtn><ToolBtn title="Adicionar linha" onClick={()=>chain().addRowAfter().run()}>＋L</ToolBtn><ToolBtn title="Excluir linha" onClick={()=>chain().deleteRow().run()}>−L</ToolBtn><ToolBtn title="Adicionar coluna" onClick={()=>chain().addColumnAfter().run()}>＋C</ToolBtn><ToolBtn title="Excluir coluna" onClick={()=>chain().deleteColumn().run()}>−C</ToolBtn><ToolBtn title="Alternar cabeçalho" onClick={()=>chain().toggleHeaderRow().run()}>H</ToolBtn><ToolBtn title="Excluir tabela" onClick={()=>chain().deleteTable().run()}><Trash2 size={14}/></ToolBtn>
-            <span className="sep"/><ToolBtn title="Inserir imagem" onClick={()=>document.getElementById("note-image-input")?.click()}><ImagePlus size={14}/></ToolBtn><input id="note-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e=>{const f=e.currentTarget.files?.[0];if(f)void addImageFile(f);e.currentTarget.value="";}} /><ToolBtn title="Texto alternativo da imagem" onClick={()=>{if(!editor.isActive("image")){dispatch({type:"error",message:"Selecione uma imagem para editar o texto alternativo."});return;}setImageAlt(editor.getAttributes("image").alt||"");setAltDialog(true);}}>Alt</ToolBtn>
-          </div></details>
-        </div>
-      )}
-
+      <div className="editor-topbar">
+        <button type="button" className="reference-toggle" aria-pressed={referenceId !== null} title={referenceId ? "Fechar nota de referência" : "Abrir outra nota ao lado (somente leitura)"} aria-label={referenceId ? "Fechar nota de referência" : "Abrir nota de referência ao lado"} onClick={() => { if (referenceId) setReferenceId(null); else { setPickerTarget(null); setReferencePicker(true); } }}><Columns2 size={14} /><span>Lado a lado</span></button>
+        <WritingLayoutControl appearance={appearance} update={onAppearanceChange} />
+      </div>
+      <div className={`editor-split${referenceId ? " with-reference" : ""}`} ref={splitRef} style={referenceId ? ({ "--reference-w": `${refWidth}px` } as React.CSSProperties) : undefined}>
+      <div className="editor-stage editor-main-stage">
       <div className="editor-scroll">
         <div className="editor-content">
           <textarea
@@ -266,8 +283,71 @@ export function NoteEditor() {
             }}
           />
           <EditorContent editor={editor} readOnly={inTrash} />
+          {!inTrash&&<NoteBacklinks id={note.id} revision={state.notes} onOpen={async id=>{if(await flushSave())await openNote(id)}}/>}
         </div>
       </div>
+      {!inTrash && (
+        <div className="editor-toolbar" role="toolbar" aria-label="Formatação">
+          <ToolBtn title="Desfazer" onClick={() => chain().undo().run()}><Undo2 size={14} /></ToolBtn>
+          <ToolBtn title="Refazer" onClick={() => chain().redo().run()}><Redo2 size={14} /></ToolBtn>
+          <span className="sep" />
+          <select
+            className="toolbar-font"
+            aria-label="Fonte do texto"
+            title={editor.isActive("codeBlock") || editor.isActive("code") ? "Código usa fonte monoespaçada" : "Aplicar fonte à seleção ou ao próximo texto digitado"}
+            disabled={editor.isActive("codeBlock") || editor.isActive("code")}
+            value={fontFamily}
+            onChange={event => chain().setMark("textStyle", { fontFamily: event.target.value || null }).removeEmptyTextStyle().run()}
+          >
+            <option value="">Padrão do editor</option>
+            {fontFamily === MIXED_FONT && <option value={MIXED_FONT} disabled>Várias fontes</option>}
+            {fontFamily && fontFamily !== MIXED_FONT && !knownFont && <option value={fontFamily}>{fontFamily.split(",")[0].replace(/["']/g, "")}</option>}
+            {FONT_GROUPS.map(group => <optgroup key={group.label} label={group.label}>
+              {group.fonts.map(font => <option key={font.family} value={font.family} style={{ fontFamily: font.family }}>{font.name}</option>)}
+            </optgroup>)}
+          </select>
+          <span className="sep" />
+          <ToolBtn title="Título 1" on={editor.isActive("heading", { level: 1 })} onClick={() => chain().toggleHeading({ level: 1 }).run()}><Heading1 size={14} /></ToolBtn>
+          <ToolBtn title="Título 2" on={editor.isActive("heading", { level: 2 })} onClick={() => chain().toggleHeading({ level: 2 }).run()}><Heading2 size={14} /></ToolBtn>
+          <ToolBtn title="Título 3" on={editor.isActive("heading", { level: 3 })} onClick={() => chain().toggleHeading({ level: 3 }).run()}><Heading3 size={14} /></ToolBtn>
+          <span className="sep" />
+          <ToolBtn title="Negrito (Ctrl+B)" on={editor.isActive("bold")} onClick={() => chain().toggleBold().run()}><Bold size={14} /></ToolBtn>
+          <ToolBtn title="Itálico (Ctrl+I)" on={editor.isActive("italic")} onClick={() => chain().toggleItalic().run()}><Italic size={14} /></ToolBtn>
+          <TextColorPicker editor={editor} disabled={inTrash} />
+          <ToolBtn title="Código inline" on={editor.isActive("code")} onClick={() => chain().toggleCode().run()}><Code size={14} /></ToolBtn>
+          <details className="toolbar-menu"><summary title="Formatação adicional"><Type size={15}/></summary><div className="toolbar-popover"><ToolBtn title="Sublinhar" on={editor.isActive("underline")} onClick={() => chain().toggleUnderline().run()}><UnderlineIcon size={14}/></ToolBtn><ToolBtn title="Alinhar à esquerda" on={editor.isActive({textAlign:"left"})} onClick={()=>chain().setTextAlign("left").run()}><AlignLeft size={14}/></ToolBtn><ToolBtn title="Centralizar" on={editor.isActive({textAlign:"center"})} onClick={()=>chain().setTextAlign("center").run()}><AlignCenter size={14}/></ToolBtn><ToolBtn title="Alinhar à direita" on={editor.isActive({textAlign:"right"})} onClick={()=>chain().setTextAlign("right").run()}><AlignRight size={14}/></ToolBtn></div></details>
+          <span className="sep" />
+          <ToolBtn title="Lista com marcadores" on={editor.isActive("bulletList")} onClick={() => chain().toggleBulletList().run()}><List size={14} /></ToolBtn>
+          <ToolBtn title="Lista numerada" on={editor.isActive("orderedList")} onClick={() => chain().toggleOrderedList().run()}><ListOrdered size={14} /></ToolBtn>
+          <ToolBtn title="Checklist" on={editor.isActive("taskList")} onClick={() => chain().toggleTaskList().run()}><SquareCheck size={14} /></ToolBtn>
+          <ToolBtn title="Citação" on={editor.isActive("blockquote")} onClick={() => chain().toggleBlockquote().run()}><Quote size={14} /></ToolBtn>
+          <ToolBtn title="Bloco de código" on={editor.isActive("codeBlock")} onClick={() => chain().toggleCodeBlock().run()}><CodeXml size={14} /></ToolBtn>
+          <details className="toolbar-menu"><summary title="Mais ferramentas"><Ellipsis size={16}/></summary><div className="toolbar-popover toolbar-tools-popover">
+            <ToolBtn title="Link" onClick={openLinkDialog}><Link2 size={14}/></ToolBtn><ToolBtn title="Link para nota" onClick={()=>void openInternalLinkDialog()}><NotebookPen size={14}/></ToolBtn>
+            <span className="sep"/><ToolBtn title="Inserir tabela" onClick={()=>chain().insertTable({rows:3,cols:3,withHeaderRow:true}).run()}><Table2 size={14}/></ToolBtn><ToolBtn title="Adicionar linha" onClick={()=>chain().addRowAfter().run()}>＋L</ToolBtn><ToolBtn title="Excluir linha" onClick={()=>chain().deleteRow().run()}>−L</ToolBtn><ToolBtn title="Adicionar coluna" onClick={()=>chain().addColumnAfter().run()}>＋C</ToolBtn><ToolBtn title="Excluir coluna" onClick={()=>chain().deleteColumn().run()}>−C</ToolBtn><ToolBtn title="Alternar cabeçalho" onClick={()=>chain().toggleHeaderRow().run()}>H</ToolBtn><ToolBtn title="Excluir tabela" onClick={()=>chain().deleteTable().run()}><Trash2 size={14}/></ToolBtn>
+            <span className="sep"/><ToolBtn title="Inserir imagem" onClick={()=>document.getElementById("note-image-input")?.click()}><ImagePlus size={14}/></ToolBtn><input id="note-image-input" type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={e=>{const f=e.currentTarget.files?.[0];if(f)void addImageFile(f);e.currentTarget.value="";}} /><ToolBtn title="Texto alternativo da imagem" onClick={()=>{if(!editor.isActive("image")){dispatch({type:"error",message:"Selecione uma imagem para editar o texto alternativo."});return;}setImageAlt(editor.getAttributes("image").alt||"");setAltDialog(true);}}>Alt</ToolBtn>
+          </div></details>
+        </div>
+      )}
+      </div>
+      {referenceId && <>
+        <div className="reference-resizer" role="separator" aria-orientation="vertical" aria-label="Ajustar largura da nota de referência" aria-valuemin={240} aria-valuenow={refWidth} tabIndex={0}
+          onKeyDown={e => { if (e.key === "ArrowLeft") { e.preventDefault(); setRefWidthPersist(refWidth + 24); } if (e.key === "ArrowRight") { e.preventDefault(); setRefWidthPersist(refWidth - 24); } }}
+          onPointerDown={e => { e.preventDefault(); const target = e.currentTarget; target.setPointerCapture(e.pointerId); const startX = e.clientX, startW = refWidth; const move = (ev: PointerEvent) => setRefWidth(clampRef(startW + (startX - ev.clientX))); const up = (ev: PointerEvent) => { target.removeEventListener("pointermove", move); target.removeEventListener("pointerup", up); target.releasePointerCapture(ev.pointerId); setRefWidthPersist(startW + (startX - ev.clientX)); }; target.addEventListener("pointermove", move); target.addEventListener("pointerup", up); }} />
+        <ReferencePane noteId={referenceId} mainNoteId={note.id}
+          onChange={() => { setPickerTarget(null); setReferencePicker(true); }}
+          onClose={() => setReferenceId(null)}
+          onNavigate={id => setReferenceId(id)}
+          onSwap={async () => { const old = note.id, next = referenceId; try { if (!(await flushSave())) return; await openNote(next); setReferenceId(old); } catch (err) { dispatch({ type: "error", message: `Não foi possível permutar: ${(err as Error).message}` }); } }} />
+      </>}
+      </div>
+
+      {referencePicker && <div className="overlay dialog-overlay" onMouseDown={e => { if (e.target === e.currentTarget) setReferencePicker(false); }}><section ref={referencePickerRef} className="modal internal-link-modal" role="dialog" aria-modal="true" aria-labelledby="reference-picker-title">
+        <header className="dialog-heading"><span><h3 id="reference-picker-title">Nota de referência</h3><p>Escolha outra nota para consultar ao lado. Ela abre somente para leitura e não é alterada.</p></span><button aria-label="Fechar seleção de referência" onClick={() => setReferencePicker(false)}><X size={17} /></button></header>
+        <NotePicker value={pickerTarget} onChange={setPickerTarget} excludeId={note.id} autoFocus />
+        <div className="row"><button onClick={() => setReferencePicker(false)}>Cancelar</button><button className="primary" disabled={!pickerTarget} onClick={() => { if (pickerTarget) { setReferenceId(pickerTarget.id); setReferencePicker(false); } }}>Abrir ao lado</button></div>
+      </section></div>}
+      {saveTemplateOpen && <SaveTemplateDialog noteId={note.id} noteTitle={note.title} onClose={() => setSaveTemplateOpen(false)} onSaved={result => { setSaveTemplateOpen(false); setExportStatus({ text: `Modelo “${result.template.name}” salvo${result.copiedAssets ? ` com ${result.copiedAssets} mídia(s)` : ""}${result.skippedAssets.length ? `; ${result.skippedAssets.length} mídia(s) indisponível(is) ficaram de fora` : ""}.`, kind: "ok" }); }} />}
 
       {linkDialog && <div className="overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) closeLinkDialog(); }}>
         <section className="modal" role="dialog" aria-modal="true" aria-labelledby="link-dialog-title" onKeyDown={(e) => { if (e.key === "Escape") closeLinkDialog(); }}>
@@ -283,12 +363,10 @@ export function NoteEditor() {
         </section>
       </div>}
 
-      {internalDialog && <div className="overlay" onMouseDown={e => { if(e.target===e.currentTarget)setInternalDialog(false); }}><section className="modal internal-link-modal" role="dialog" aria-modal="true" aria-labelledby="internal-link-title" onKeyDown={e=>{if(e.key==="Escape")setInternalDialog(false);}}>
-        <h3 id="internal-link-title">Vincular nota</h3>
-        <label htmlFor="note-link-search">Pesquisar nota</label>
-        <input id="note-link-search" autoFocus value={noteQuery} placeholder="Título ou conteúdo…" onChange={e=>{const q=e.target.value;setNoteQuery(q);void client.findNotes(q).then(setLinkTargets);}} />
-        <div className="internal-link-results" role="listbox" aria-label="Notas encontradas">{linkTargets.filter(n=>n.id!==note.id).map(n=><button type="button" role="option" aria-selected={selectedTarget?.id===n.id} key={n.id} onClick={()=>setSelectedTarget({id:n.id,title:n.title})}><strong>{n.title}</strong><small>{n.preview.replace(/<[^>]*>/g,"")}</small></button>)}{linkTargets.filter(n=>n.id!==note.id).length===0&&<span>Nenhuma nota encontrada.</span>}</div>
-        <label htmlFor="note-link-anchor">Texto âncora</label><input id="note-link-anchor" value={anchorText} onChange={e=>setAnchorText(e.target.value)} placeholder="Texto exibido no editor" />
+      {internalDialog && <div className="overlay dialog-overlay" onMouseDown={e => { if(e.target===e.currentTarget)setInternalDialog(false); }}><section ref={internalDialogRef} className="modal internal-link-modal" role="dialog" aria-modal="true" aria-labelledby="internal-link-title">
+        <header className="dialog-heading"><span><h3 id="internal-link-title">Vincular nota</h3><p>Encontre a nota de destino e escolha o texto do link.</p></span><button aria-label="Fechar vínculo de nota" onClick={()=>setInternalDialog(false)}><X size={17}/></button></header>
+        <NotePicker value={selectedTarget} onChange={setSelectedTarget} excludeId={note.id} autoFocus />
+        <div className="dlg-field"><label htmlFor="note-link-anchor">Texto do link</label><input id="note-link-anchor" value={anchorText} maxLength={500} onChange={e=>setAnchorText(e.target.value)} placeholder="Usar o título da nota selecionada" /></div>
         <div className="row"><button onClick={()=>setInternalDialog(false)}>Cancelar</button>{editor.isActive("link")&&<button onClick={removeCurrentLink}>Remover link</button>}<button className="primary" disabled={!selectedTarget} onClick={insertInternalLink}>Inserir link</button></div>
       </section></div>}
 
@@ -304,12 +382,13 @@ export function NoteEditor() {
           )}
           {state.saveState === "error" && <span className="saved-warn" title="Verifique a barra de erro">Problema ao salvar</span>}
         </span>
+        {exportStatus && <span className={`export-status ${exportStatus.kind}`} role={exportStatus.kind === "error" ? "alert" : "status"} data-export-status={exportStatus.kind}>{exportStatus.text}<button className="icon" aria-label="Dispensar aviso" onClick={() => setExportStatus(null)}><X size={11} /></button></span>}
         <span className="spacer" />
         {!inTrash && (
           <div className="status-actions">
             <NoteNotebook />
             <NoteTags />
-            <NoteAttachments onInsertImage={(storedName,alt)=>editor.chain().focus().setImage({src:`caderno-asset://${storedName}`,alt,title:alt}).run()} />
+            <NoteAttachments onInsertImage={(storedName,alt)=>editor.chain().focus().setImage({src:`caderno-asset://${storedName}`,alt,title:alt}).run()} onInsertMedia={(item,sourceNoteId)=>{if(noteRef.current?.id!==sourceNoteId)return;if(item.mimeType?.startsWith("image/")){editor.chain().focus().setImage({src:`caderno-asset://${item.storedName}`,alt:item.fileName}).run();return;}editor.chain().focus().insertContent([{type:"attachment",attrs:item},{type:"paragraph"}]).run();}} />
             <AudioRecorder key={note.id} noteId={note.id} onSaved={async()=>{await refreshNotes();}} />
             <TranscriptionPanel noteId={note.id} editor={editor} />
             <button className="icon" aria-label="Criar tarefa ligada a esta nota" title="Criar tarefa ligada a esta nota" onClick={()=>setTaskDialog(true)}>＋</button>
@@ -320,6 +399,14 @@ export function NoteEditor() {
             <button className="icon" title={note.pinned ? "Desafixar" : "Fixar no topo"} onClick={async () => { const updated = await client.setPinned(note.id, !note.pinned); if (updated) dispatch({ type: "openNote", note: updated, noteId: updated.id }); await refreshNotes(); }}>
               <Pin size={14} style={note.pinned ? { color: "var(--accent)" } : undefined} />
             </button>
+            <button className="icon" title="Salvar como modelo" aria-label="Salvar como modelo" onClick={() => setSaveTemplateOpen(true)}><BookmarkPlus size={14} /></button>
+            <span className="pop-anchor" ref={exportPopover.rootRef}>
+              <button ref={exportPopover.triggerRef} className="icon" title="Exportar em PDF ou HTML" aria-label="Exportar em PDF ou HTML" aria-expanded={exportMenu} disabled={exporting.current} onClick={() => setExportMenu(v => !v)}><FileText size={14} /></button>
+              {exportMenu && <div className="menu-pop export-pop" role="menu">
+                <button className="menu-row" role="menuitem" data-export-format="pdf" onClick={() => void runExport("pdf")}><FileText size={13} /> Exportar como PDF</button>
+                <button className="menu-row" role="menuitem" data-export-format="html" onClick={() => void runExport("html")}><FileCode2 size={13} /> Exportar como HTML</button>
+              </div>}
+            </span>
             <button className="icon" title="Exportar em Markdown" onClick={async () => { try { await client.exportMarkdown(note.id); } catch (err) { dispatch({ type: "error", message: `Falha ao exportar: ${(err as Error).message}` }); } }}><FileDown size={14} /></button>
             <button className="icon" title="Mover para a lixeira" style={{ color: "var(--text-muted)" }} onClick={() => void deleteNote()}><Trash2 size={14} /></button>
           </div>
@@ -379,85 +466,7 @@ function NoteNotebook() {
   );
 }
 
-function NoteTags() {
-  const { state, refreshMeta, refreshNotes, openNote } = useAppStore();
-  const note = state.openNote!;
-  const [menuOpen, setMenuOpen] = useState(false);
-  const [query, setQuery] = useState("");
-  const popover = useDismissablePopover(menuOpen, () => setMenuOpen(false));
-
-  const filtered = state.tags.filter((t) => t.name.toLowerCase().includes(query.toLowerCase()));
-  const attachedIds = new Set(note.tags.map((t) => t.id));
-
-  const toggle = async (tagId: number) => {
-    if (attachedIds.has(tagId)) {
-      await client.detachTag(note.id, tagId);
-    } else {
-      await client.attachTag(note.id, tagId);
-    }
-    await refreshMeta();
-    await refreshNotes();
-    await openNote(note.id);
-  };
-
-  const createAndAttach = async () => {
-    const name = query.trim();
-    if (!name) return;
-    let tag: TagType | null | undefined = state.tags.find((t) => t.name.toLowerCase() === name.toLowerCase());
-    if (!tag) tag = await client.createTag(name);
-    if (!tag) { setMenuOpen(false); return; }
-    if (!attachedIds.has(tag.id)) await client.attachTag(note.id, tag.id);
-    setQuery("");
-    await refreshMeta();
-    await refreshNotes();
-    await openNote(note.id);
-  };
-
-  return (
-    <span className="pop-anchor" ref={popover.rootRef}>
-      <button ref={popover.triggerRef} aria-expanded={menuOpen} className={note.tags.length > 0 ? "active" : undefined} title="Etiquetas" aria-label="Etiquetas" onClick={() => { setQuery(""); setMenuOpen((v) => !v); }}>
-        <TagIcon size={13} />{note.tags.length > 0 ? note.tags.length : null}
-      </button>
-      {menuOpen && (
-        <div className="menu-pop tag-pop" role="menu">
-          {note.tags.length > 0 && (
-            <div className="tag-list">
-              {note.tags.map((t) => (
-                <span key={`etag-${t.id}`} className="tag-chip">
-                  #{t.name}
-                  <button title="Remover etiqueta" onClick={() => void toggle(t.id)}><X size={10} /></button>
-                </span>
-              ))}
-            </div>
-          )}
-          <input
-            autoFocus
-            value={query}
-            placeholder="Buscar ou criar etiqueta…"
-            onChange={(e) => setQuery(e.target.value)}
-            onKeyDown={(e) => { if (e.key === "Enter") void createAndAttach(); if (e.key === "Escape") setMenuOpen(false); }}
-          />
-          <div className="tag-options">
-            {filtered.map((t) => (
-              <button key={`menu-${t.id}`} className="menu-row" role="menuitem" onClick={() => { void toggle(t.id); setMenuOpen(false); }}>
-                {attachedIds.has(t.id) ? <CheckSquare size={13} /> : <span style={{ color: "var(--text-faint)", width: 13, display: "inline-flex", justifyContent: "center" }}>#</span>}
-                {t.name}
-              </button>
-            ))}
-            {query.trim() && !filtered.some((t) => t.name.toLowerCase() === query.toLowerCase()) && (
-              <button className="menu-row" role="menuitem" onClick={() => void createAndAttach()}>Criar “{query.trim()}”</button>
-            )}
-            {filtered.length === 0 && !query.trim() && (
-              <span style={{ padding: "4px 8px", fontSize: 12, color: "var(--text-faint)" }}>Nenhuma etiqueta ainda.</span>
-            )}
-          </div>
-        </div>
-      )}
-    </span>
-  );
-}
-
-function NoteAttachments({onInsertImage}:{onInsertImage:(storedName:string,alt:string)=>void}) {
+function NoteAttachments({onInsertImage,onInsertMedia}:{onInsertImage:(storedName:string,alt:string)=>void;onInsertMedia:(item:PreviewAttachment,noteId:string)=>void}) {
   const { state, refreshNotes } = useAppStore();
   const note = state.openNote!;
   const [items, setItems] = useState<PreviewAttachment[]>([]);
@@ -475,7 +484,7 @@ function NoteAttachments({onInsertImage}:{onInsertImage:(storedName:string,alt:s
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setMenuOpen(false); setError(null); }, [note.id]);
   useEffect(()=>{
-    const open=async(event:Event)=>{const detail=(event as CustomEvent<{noteId:string;attachmentId:number}>).detail;if(detail?.noteId!==note.id)return;const found=(await client.listAttachments(note.id)).find(a=>a.id===detail.attachmentId);if(found&&(["application/pdf","text/html"].includes(found.mimeType??"")||found.mimeType?.startsWith("image/")||found.mimeType?.startsWith("video/")||found.mimeType?.startsWith("audio/"))){setItems(await client.listAttachments(note.id));setPreview(found);}};
+    const open=async(event:Event)=>{const detail=(event as CustomEvent<{noteId:string;attachmentId:number}>).detail;if(detail?.noteId!==note.id)return;const found=(await client.listAttachments(note.id)).find(a=>a.id===detail.attachmentId);if(found&&(["application/pdf","text/html"].includes(found.mimeType??"")||found.mimeType?.startsWith("image/")||found.mimeType?.startsWith("video/")||found.mimeType?.startsWith("audio/"))){setItems(await client.listAttachments(note.id));setMenuOpen(false);setPreview(found);}};
     window.addEventListener("caderno:preview-attachment",open);return()=>window.removeEventListener("caderno:preview-attachment",open);
   },[note.id]);
 
@@ -491,9 +500,10 @@ function NoteAttachments({onInsertImage}:{onInsertImage:(storedName:string,alt:s
           binary += String.fromCharCode.apply(null, Array.from(bytes.subarray(i, i + chunk)));
         }
         if(inlineImages&&f.type.startsWith("image/")){const saved=await client.saveImage(note.id,f.name,btoa(binary));onInsertImage(saved.storedName,f.name);}
-        else await client.saveAttachment(note.id, f.name, btoa(binary));
+        else { const saved=await client.saveAttachment(note.id, f.name, btoa(binary)); if(inlineImages){const added=(await client.listAttachments(note.id)).find(item=>item.id===saved.id);if(added)onInsertMedia(added,note.id);} }
       }
       await load();
+      if(inlineImages)setMenuOpen(false);
       await refreshNotes();
     } catch (err) {
       setError(`${(err as Error).message}`);
@@ -518,10 +528,11 @@ function NoteAttachments({onInsertImage}:{onInsertImage:(storedName:string,alt:s
           {items.map((a) => (
             <div key={`att-${a.id}`} className="attach-row">
               <Paperclip size={12} />
-              <button className="ghost" title="Abrir arquivo" onClick={async () => { if(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/")){setPreview(a);setError(null);return;}try { await client.openAttachment(note.id, a.id); setError(null); } catch (err) { setError(`Não foi possível abrir o anexo: ${(err as Error).message}`); } }}>
+              <button className="ghost" title="Abrir arquivo" onClick={async () => { if(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/")){setMenuOpen(false);setPreview(a);setError(null);return;}try { await client.openAttachment(note.id, a.id); setError(null); } catch (err) { setError(`Não foi possível abrir o anexo: ${(err as Error).message}`); } }}>
                 {a.fileName}
               </button>
-              {(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/"))&&<button className="icon" aria-label={`Visualizar ${a.fileName}`} title="Visualizar" onClick={()=>setPreview(a)}>◉</button>}
+              {(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/"))&&<button className="icon" aria-label={`Visualizar ${a.fileName}`} title="Visualizar" onClick={()=>{setMenuOpen(false);setPreview(a);}}>◉</button>}
+              {(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/"))&&<button className="icon" aria-label={`Incorporar ${a.fileName} ao texto`} title="Incorporar ao texto na posição do cursor" onClick={()=>{setMenuOpen(false);onInsertMedia(a,note.id);}}>＋</button>}
               <span className="size">{Math.ceil(a.byteSize / 1024)} KiB</span>
               <button className="icon" title="Remover" onClick={async () => { if (window.confirm(`Remover o anexo “${a.fileName}”?`)) { await client.deleteAttachment(note.id, a.id); await load(); } }}>
                 <X size={12} />

@@ -23,6 +23,8 @@ import {
   markdownToNoteHtml,
 } from "../../shared/text";
 import type { AttachmentMeta, BackupRestoreResult, CadernoClient } from "./types";
+import { normalizeTagName, tagKey } from "../../shared/tags";
+import { tokenizeSearchText } from "../../shared/search";
 
 interface WebNote {
   id: string;
@@ -58,6 +60,12 @@ const ORDER: Record<SortOrder, (a: WebNote, b: WebNote) => number> = {
   updated_asc: (a, b) => a.updatedAt - b.updatedAt,
   created_desc: (a, b) => b.createdAt - a.createdAt,
   title_asc: (a, b) => a.title.localeCompare(b.title, undefined, { sensitivity: "base" }),
+};
+const foldSearch = (value: string) => value.normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLocaleLowerCase();
+const matchesSearchPrefix = (value: string, query: string) => {
+  const words = tokenizeSearchText(foldSearch(value));
+  const terms = tokenizeSearchText(foldSearch(query));
+  return terms.length > 0 && terms.every((term,index) => words.some(word => index === terms.length - 1 ? word.startsWith(term) : word === term));
 };
 
 function seedStore(): WebStore {
@@ -189,7 +197,7 @@ export class WebClient implements CadernoClient {
       if (q.view === "notebook" && n.notebookId !== q.notebookId) return false;
       if (q.view === "unfiled" && n.notebookId !== null) return false;
       if (q.view === "tag" && !this.store.noteTags.some(nt => nt.noteId === n.id && nt.tagId === q.tagId)) return false;
-      if (term && !(n.title.toLowerCase().includes(term) || n.contentText.toLowerCase().includes(term))) return false;
+      if (term && !matchesSearchPrefix(`${n.title} ${n.contentText}`, term)) return false;
       return true;
     });
     list = list.slice().sort(ORDER[q.order ?? "updated_desc"]);
@@ -200,9 +208,14 @@ export class WebClient implements CadernoClient {
     const n = this.store.notes.find(x => x.id === id);
     return n ? this.noteFull(n) : null;
   }
+  async searchNotes(query:string,limit=50):Promise<NoteMeta[]>{return (await this.listNotes({view:'all',query})).slice(0,limit);}
+  async backlinks(id:string):Promise<NoteLinkTarget[]>{const all=await this.listNotes({view:'all'});const result:NoteLinkTarget[]=[];for(const n of all){const note=await this.getNote(n.id);if(n.id!==id&&note?.contentHtml.includes(`caderno-note://${id}`))result.push({id:n.id,title:n.title,preview:n.preview});}return result;}
+  async listPdfAnnotations():Promise<import('../../shared/ipc').PdfAnnotation[]>{return [];}
+  async savePdfAnnotation():Promise<string>{throw new Error('Marcações de PDF disponíveis no app desktop.');}
+  async deletePdfAnnotation():Promise<boolean>{throw new Error('Marcações de PDF disponíveis no app desktop.');}
   async findNotes(query: string, limit = 20): Promise<NoteLinkTarget[]> {
-    const q=query.trim().toLowerCase(); if(!q) return [];
-    return this.store.notes.filter(n=>n.deletedAt===null && `${n.title} ${n.contentText}`.toLowerCase().includes(q)).slice(0,limit).map(n=>({id:n.id,title:n.title||"Sem título",preview:extractPreviewHtml(n.contentText)}));
+    const q=query.trim(); if(!q) return [];
+    return this.store.notes.filter(n=>n.deletedAt===null && matchesSearchPrefix(`${n.title} ${n.contentText}`, q)).slice(0,limit).map(n=>({id:n.id,title:n.title||"Sem título",preview:extractPreviewHtml(n.contentText)}));
   }
 
   async createNote(input: { notebookId?: number | null; title?: string; contentHtml?: string }): Promise<NoteFull> {
@@ -353,7 +366,9 @@ export class WebClient implements CadernoClient {
   }
 
   async createTag(name: string): Promise<Tag | null> {
-    if (this.store.tags.some(t => t.name.toLowerCase() === name.toLowerCase())) return null;
+    name = normalizeTagName(name);
+    if (!name || name.length > 80) throw new Error("Use um nome de etiqueta entre 1 e 80 caracteres.");
+    if (this.store.tags.some(t => tagKey(t.name) === tagKey(name))) return null;
     const t: WebTag = { id: this.nextTagId(), name };
     this.store.tags.push(t);
     this.persist();
@@ -365,6 +380,25 @@ export class WebClient implements CadernoClient {
     this.store.noteTags.push({ noteId, tagId });
     this.persist();
     return true;
+  }
+
+  async renameTag(id: number, name: string): Promise<Tag | null> {
+    name = normalizeTagName(name);
+    if (!name || name.length > 80) throw new Error("Use um nome de etiqueta entre 1 e 80 caracteres.");
+    if (this.store.tags.some(t => t.id !== id && tagKey(t.name) === tagKey(name))) return null;
+    const tag = this.store.tags.find(t => t.id === id);
+    if (!tag) throw new Error("Etiqueta não encontrada.");
+    tag.name = name;
+    this.persist();
+    return (await this.listTags()).find(t => t.id === id) ?? null;
+  }
+
+  async deleteTag(id: number): Promise<boolean> {
+    const before = this.store.tags.length;
+    this.store.tags = this.store.tags.filter(t => t.id !== id);
+    this.store.noteTags = this.store.noteTags.filter(t => t.tagId !== id);
+    this.persist();
+    return this.store.tags.length < before;
   }
 
   async detachTag(noteId: string, tagId: number): Promise<boolean> {
@@ -585,6 +619,16 @@ export class WebClient implements CadernoClient {
   async enableClipper():Promise<{port:number}>{throw new Error("O Web Clipper exige o app desktop.");}
   async pairClipper():Promise<{code:string;nonce:string;expiresAt:number}>{throw new Error("O Web Clipper exige o app desktop.");}
   async revokeClipper(){return true;}
+  async listTemplates():Promise<import("../../shared/ipc").NoteTemplateMeta[]>{return [];}
+  async getTemplate():Promise<import("../../shared/ipc").NoteTemplateFull|null>{return null;}
+  async createTemplateFromNote():Promise<import("../../shared/ipc").TemplateSaveResult>{throw new Error("Modelos de nota exigem o app desktop.");}
+  async updateTemplate():Promise<import("../../shared/ipc").NoteTemplateMeta|null>{throw new Error("Modelos de nota exigem o app desktop.");}
+  async deleteTemplate():Promise<boolean>{throw new Error("Modelos de nota exigem o app desktop.");}
+  async applyTemplate():Promise<NoteFull|null>{throw new Error("Modelos de nota exigem o app desktop.");}
+  async restoreBuiltinTemplates():Promise<number>{return 0;}
+  async exportBegin():Promise<{canceled:true}|import("../../shared/ipc").ExportBeginReady>{throw new Error("A exportação em PDF/HTML exige o app desktop.");}
+  async exportFinish():Promise<import("../../shared/ipc").ExportFinishResult>{throw new Error("A exportação em PDF/HTML exige o app desktop.");}
+  async exportAbort():Promise<boolean>{return true;}
 }
 
 export function hasDesktopBridge(): boolean {

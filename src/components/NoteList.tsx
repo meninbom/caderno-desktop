@@ -1,5 +1,5 @@
 import React, { useMemo, useEffect, useState } from "react";
-import { Star, Pin, StickyNote } from "lucide-react";
+import { Star, Pin, StickyNote, Search, SlidersHorizontal, ChevronDown, X, PanelLeftClose } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { client } from "../api/client";
 
@@ -11,6 +11,22 @@ function fmtDate(ts: number): string {
   return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "short" });
 }
 
+const FILTER_KEYS = ["notebook", "tag", "after", "before", "type"] as const;
+type FilterKey = typeof FILTER_KEYS[number];
+const FILTER_LABELS: Record<FilterKey, string> = { notebook: "Caderno", tag: "Etiqueta", after: "Depois de", before: "Antes de", type: "Tipo" };
+const TYPE_OPTIONS = [
+  { value: "", label: "Tudo" },
+  { value: "note", label: "Notas" },
+  { value: "attachment", label: "Anexos" },
+  { value: "transcription", label: "Transcrições" },
+];
+
+function fmtFilterValue(key: FilterKey, value: string): string {
+  if (key === "type") return TYPE_OPTIONS.find(o => o.value === value)?.label ?? value;
+  if (key === "after" || key === "before") return value.split("-").reverse().join("/");
+  return value;
+}
+
 const VIEW_TITLES: Record<string, string> = {
   all: "Notas",
   favorites: "Favoritas",
@@ -18,14 +34,18 @@ const VIEW_TITLES: Record<string, string> = {
   unfiled: "Sem caderno",
 };
 
-export function NoteList() {
+export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
   const { state, dispatch, openNote, refreshMeta, refreshNotes } = useAppStore();
   const selectionKey = state.selection.kind;
-  const [jobs,setJobs]=useState<Awaited<ReturnType<typeof client.listAttachmentJobs>>>([]);
-  const refreshJobs=async()=>{try{setJobs(await client.listAttachmentJobs())}catch{}};
-  useEffect(()=>{void refreshJobs();const timer=window.setInterval(()=>void refreshJobs(),1200);return()=>window.clearInterval(timer)},[]);
   const updateFilter=(key:string,value:string)=>{const tokens=state.search.match(/(?:[^\s"]+|"(?:\\.|[^"])*")+/g)??[];const kept=tokens.filter(t=>!t.toLowerCase().startsWith(`${key}:`));if(value)kept.push(`${key}:${/[\s"]/.test(value)?`"${value.replace(/([\\"])/g,"\\$1")}"`:value}`);dispatch({type:"search",value:kept.join(" ")});};
   const filterValue=(key:string)=>{const m=new RegExp(`(?:^|\\s)${key}:(?:"((?:\\\\.|[^"])*)"|(\\S+))`,'i').exec(state.search);return(m?.[1]??m?.[2]??"").replace(/\\([\\"])/g,"$1")};
+
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const activeFilters = FILTER_KEYS.map(key => ({ key, value: filterValue(key) })).filter(f => f.value);
+  const clearFilters = () => {
+    const tokens = (state.search.match(/(?:[^\s"]+|"(?:\\.|[^"])*")+/g) ?? []).filter(t => !/^(notebook|tag|before|after|type):/i.test(t));
+    dispatch({ type: "search", value: tokens.join(" ") });
+  };
 
   const headerTitle = useMemo(() => {
     if (selectionKey === "notebook") {
@@ -64,8 +84,9 @@ export function NoteList() {
     <section className="notelist" aria-label="Lista de notas">
       <div className="notelist-header">
         <div className="title">
-          <span>{headerTitle}</span>
+          <span className="notelist-title-text">{headerTitle}</span>
           <span className="count">{state.notes.length}</span>
+          {onCollapse && <button className="pane-collapse" title="Recolher lista de notas (Ctrl+Alt+\)" aria-label="Recolher lista de notas" onClick={onCollapse}><PanelLeftClose size={14} /></button>}
         </div>
         {selectionKey !== "trash" ? (
           <div className="notelist-actions">
@@ -92,28 +113,91 @@ export function NoteList() {
           </div>
         )}
         <div className="notelist-search">
-          <input
-            type="search"
-            aria-label="Buscar notas"
-            placeholder="Buscar notas…"
-            value={state.search}
-            onChange={(e) => dispatch({ type: "search", value: e.target.value })}
-          />
-          <details className="search-help">
-            <summary aria-label="Ajuda da busca">Ajuda</summary>
-            <p>Combine texto e filtros: <code>notebook:"Projetos pessoais" tag:ideias before:2026-12-31 after:2026-01-01 type:note</code></p>
-            <p>Use aspas para valores com espaços. type:attachment pesquisa texto extraído. type:transcription ainda não tem fonte configurada.</p>
-          </details>
-          <div className="search-filters" aria-label="Filtros da busca">
-            <select aria-label="Filtrar por caderno" value={filterValue("notebook")} onChange={e=>updateFilter("notebook",e.target.value)}><option value="">Todos cadernos</option>{state.notebooks.map(n=><option key={n.id} value={n.name}>{n.name}</option>)}</select>
-            <select aria-label="Filtrar por etiqueta" value={filterValue("tag")} onChange={e=>updateFilter("tag",e.target.value)}><option value="">Todas etiquetas</option>{state.tags.map(t=><option key={t.id} value={t.name}>{t.name}</option>)}</select>
-            <input aria-label="Criadas antes de" type="date" value={filterValue("before")} onChange={e=>updateFilter("before",e.target.value)} />
-            <input aria-label="Criadas depois de" type="date" value={filterValue("after")} onChange={e=>updateFilter("after",e.target.value)} />
-            <select aria-label="Tipo de resultado" value={filterValue("type")} onChange={e=>updateFilter("type",e.target.value)}><option value="">Notas e anexos</option><option value="note">Notas</option><option value="attachment">Anexos com texto</option><option value="transcription">Transcrições</option></select>
-            {(filterValue("notebook")||filterValue("tag")||filterValue("before")||filterValue("after")||filterValue("type"))&&<button className="ghost" onClick={()=>{const tokens=(state.search.match(/(?:[^\s"]+|"(?:\\.|[^"])*")+/g)??[]).filter(t=>! /^(notebook|tag|before|after|type):/i.test(t));dispatch({type:"search",value:tokens.join(" ")})}}>Limpar filtros</button>}
+          <div className="search-row">
+            <div className="search-field">
+              <Search size={13} strokeWidth={1.8} aria-hidden="true" />
+              <input
+                type="search"
+                aria-label="Buscar notas"
+                placeholder="Buscar notas…"
+                value={state.search}
+                onChange={(e) => dispatch({ type: "search", value: e.target.value })}
+              />
+            </div>
+            <button
+              type="button"
+              className={`filters-toggle ${filtersOpen ? "open" : ""} ${activeFilters.length ? "active" : ""}`}
+              aria-expanded={filtersOpen}
+              aria-controls="note-filters"
+              aria-label={activeFilters.length ? `Filtros (${activeFilters.length} ativos)` : "Filtros"}
+              title="Filtros"
+              onClick={() => setFiltersOpen(o => !o)}
+            >
+              <SlidersHorizontal size={14} strokeWidth={1.8} />
+              {activeFilters.length > 0 && <span className="filters-badge">{activeFilters.length}</span>}
+            </button>
           </div>
+          {!filtersOpen && activeFilters.length > 0 && (
+            <div className="filter-chips" aria-label="Filtros ativos">
+              {activeFilters.map(f => (
+                <span key={f.key} className="filter-chip">
+                  <span className="chip-label">{FILTER_LABELS[f.key]}: {fmtFilterValue(f.key, f.value)}</span>
+                  <button type="button" aria-label={`Remover filtro ${FILTER_LABELS[f.key]}`} onClick={() => updateFilter(f.key, "")}><X size={10} strokeWidth={2} /></button>
+                </span>
+              ))}
+              <button type="button" className="chips-clear" onClick={clearFilters}>Limpar</button>
+            </div>
+          )}
+          {filtersOpen && (
+            <div id="note-filters" className="filter-panel" role="group" aria-label="Filtros da busca">
+              <label className="filter-field">
+                <span>Caderno</span>
+                <span className="select-wrap">
+                  <select aria-label="Filtrar por caderno" value={filterValue("notebook")} onChange={e=>updateFilter("notebook",e.target.value)}><option value="">Todos</option>{state.notebooks.map(n=><option key={n.id} value={n.name}>{n.name}</option>)}</select>
+                  <ChevronDown size={12} strokeWidth={2} aria-hidden="true" />
+                </span>
+              </label>
+              <label className="filter-field">
+                <span>Etiqueta</span>
+                <span className="select-wrap">
+                  <select aria-label="Filtrar por etiqueta" value={filterValue("tag")} onChange={e=>updateFilter("tag",e.target.value)}><option value="">Todas</option>{state.tags.map(t=><option key={t.id} value={t.name}>{t.name}</option>)}</select>
+                  <ChevronDown size={12} strokeWidth={2} aria-hidden="true" />
+                </span>
+              </label>
+              <label className="filter-field">
+                <span>Criada depois de</span>
+                <input aria-label="Criadas depois de" type="date" value={filterValue("after")} onChange={e=>updateFilter("after",e.target.value)} />
+              </label>
+              <label className="filter-field">
+                <span>Criada antes de</span>
+                <input aria-label="Criadas antes de" type="date" value={filterValue("before")} onChange={e=>updateFilter("before",e.target.value)} />
+              </label>
+              <div className="filter-field wide">
+                <span id="filter-type-label">Tipo de resultado</span>
+                <div className="segmented" role="radiogroup" aria-labelledby="filter-type-label">
+                  {TYPE_OPTIONS.map(o => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      role="radio"
+                      aria-checked={filterValue("type") === o.value}
+                      className={filterValue("type") === o.value ? "on" : ""}
+                      onClick={() => updateFilter("type", o.value)}
+                    >{o.label}</button>
+                  ))}
+                </div>
+              </div>
+              <div className="filter-footer">
+                <details className="search-help">
+                  <summary aria-label="Ajuda da busca">Dicas de busca</summary>
+                  <p>Combine texto e filtros: <code>notebook:"Projetos pessoais" tag:ideias before:2026-12-31 after:2026-01-01 type:note</code></p>
+                  <p>Use aspas para valores com espaços. type:attachment pesquisa texto extraído. type:transcription ainda não tem fonte configurada.</p>
+                </details>
+                {activeFilters.length > 0 && <button type="button" className="clear-filters" onClick={clearFilters}>Limpar filtros</button>}
+              </div>
+            </div>
+          )}
         </div>
-        {jobs.length>0&&<div className="attachment-jobs" aria-label="Estado da indexação de anexos"><strong>Indexação local</strong>{jobs.slice(0,3).map(j=><div key={j.id}><span title={j.error??j.status}>{j.fileName}: {j.status==='running'?`processando ${j.progress}%${j.totalPages?` · página ${Math.min(j.checkpoint,j.totalPages)}/${j.totalPages}`:""}`:j.status}{j.status==='error'&&j.error?` — ${j.error}`:""}</span>{j.status==='error'&&<button onClick={async()=>{await client.retryAttachmentJob(j.id);await refreshJobs()}}>Tentar novamente</button>}{['queued','running'].includes(j.status)&&<button onClick={async()=>{await client.cancelAttachmentJob(j.id);await refreshJobs()}}>Cancelar</button>}</div>)}<button onClick={async()=>{await client.reindexAttachments();await refreshJobs()}}>Reindexar anexos</button></div>}
       </div>
 
       <div className="notes-scroll">
@@ -122,7 +206,7 @@ export function NoteList() {
             <StickyNote size={20} strokeWidth={1.6} />
             <span>
               {state.search
-                ? filterValue("type")==="transcription" ? "Nenhuma transcrição indexada/configurada. Captura e transcrição pertencem à etapa 4." : filterValue("type")==="attachment" ? "Nenhum texto de anexo indexado corresponde à busca. Confira o estado da indexação acima." : "Nenhuma nota ou anexo corresponde à busca."
+                ? filterValue("type")==="transcription" ? "Nenhuma transcrição indexada/configurada. Captura e transcrição pertencem à etapa 4." : filterValue("type")==="attachment" ? "Nenhum texto de anexo indexado corresponde à busca. Confira o estado da indexação em Configurações." : "Nenhuma nota ou anexo corresponde à busca."
                 : selectionKey === "trash"
                   ? "A lixeira está vazia."
                   : "Nenhuma nota por aqui ainda."}

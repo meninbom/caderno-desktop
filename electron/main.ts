@@ -7,15 +7,22 @@ import { Readable } from "node:stream";
 import { openDatabase } from "./repo/db";
 import { CountsRepo, Meta, NotebooksRepo, NotesRepo, TagsRepo, NotebookStacksRepo, TasksRepo, EventsRepo, AttachmentJobsRepo } from "./repo/sqlite";
 import { AttachmentsRepo, BackupRepo, inspectRaster } from "./repo/attachments";
+import { PdfAnnotationsRepo } from './repo/pdf-annotations';
 import { TranscriptionsRepo } from "./repo/sqlite";
+import { TemplatesRepo } from "./repo/templates";
+import { collectAssetRefs } from "./repo/note-html";
+import { buildExportHtml, writeFileAtomic, type ExportFonts, type PdfRender } from "./export-html";
+import { htmlToPdf, exportState } from "./export-pdf";
 
-protocol.registerSchemesAsPrivileged([{ scheme: "caderno-asset", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: false } }]);
+if (process.platform === "win32") app.setAppUserModelId("com.caderno.app");
+protocol.registerSchemesAsPrivileged([{ scheme: "caderno-asset", privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: false, stream: true } }]);
 import { ListNotesQuery } from "../shared/ipc";
 import { validateInput } from "../shared/api";
 import { markdownFromNote, markdownToNoteHtml, markdownHeadline } from "./repo/markdown";
 import {LocalReminderScheduler} from './reminders';
 import { parseEml } from "./repo/eml";
 import { ClipperBridge } from "./clipper-bridge";
+import { RaycastBridge } from "./raycast-bridge";
 
 const isDev = process.env.CADERNO_DEV === "1";
 
@@ -73,7 +80,49 @@ let repos: {
   tasks: TasksRepo;
   events: EventsRepo;
   attachmentJobs: AttachmentJobsRepo;
+  pdfAnnotations: PdfAnnotationsRepo;
+  templates: TemplatesRepo;
 };
+// QA: fila de respostas simuladas do diálogo Salvar nativo (só com CADERNO_QA_IPC=1).
+// Canais de QA exigem CADERNO_QA_IPC=1 E um perfil temporário explícito (nunca o perfil real).
+function isQaTempProfile(): boolean {
+  if (process.env.CADERNO_QA_IPC !== "1" || !process.env.CADERNO_USER_DATA) return false;
+  try {
+    const tmp = fs.realpathSync(require("node:os").tmpdir()).toLowerCase() + path.sep;
+    const profile = fs.realpathSync(process.env.CADERNO_USER_DATA).toLowerCase();
+    const real = [process.env.APPDATA, process.env.LOCALAPPDATA].filter(Boolean).map(x => path.resolve(x as string, "caderno").toLowerCase());
+    return (profile + path.sep).startsWith(tmp) && !real.includes(profile) && profile === fs.realpathSync(app.getPath("userData")).toLowerCase();
+  } catch { return false; }
+}
+const qaSaveDialogQueue: { mode: "cancel" | "path"; filePath?: string }[] = [];
+async function showSaveDialogQa(options: Electron.SaveDialogOptions): Promise<{ canceled: boolean; filePath?: string }> {
+  if (isQaTempProfile() && qaSaveDialogQueue.length) {
+    const next = qaSaveDialogQueue.shift()!;
+    lifecycle("qa-save-dialog", { title: options.title, mode: next.mode });
+    return next.mode === "cancel" ? { canceled: true } : { canceled: false, filePath: next.filePath };
+  }
+  return mainWindow ? dialog.showSaveDialog(mainWindow, options) : dialog.showSaveDialog(options);
+}
+const exportTokens = new Map<string, { noteId: string; format: "pdf" | "html"; filePath: string; expiresAt: number; busy: boolean }>();
+let exportFontsCache: ExportFonts | null = null;
+function exportFonts(): ExportFonts {
+  if (exportFontsCache) return exportFontsCache;
+  const find = (prefix: string): Buffer | undefined => {
+    const italic = prefix.includes("italic");
+    for (const dir of [path.join(__dirname, "../dist/assets"), path.join(__dirname, "../src/assets/fonts")]) {
+      try {
+        const name = fs.readdirSync(dir).find(f => { const lower = f.toLowerCase(); return lower.endsWith(".ttf") && (lower === `${prefix}.ttf` || lower.startsWith(`${prefix}-`)) && lower.includes("italic") === italic; });
+        if (name) return fs.readFileSync(path.join(dir, name));
+      } catch { /* pasta ausente neste modo */ }
+    }
+    return undefined;
+  };
+  return exportFontsCache = { dmSans: find("dm-sans"), dmSansItalic: find("dm-sans-italic"), caveat: find("caveat") };
+}
+function exportFileName(title: string, ext: string): string {
+  const base = (title.trim() || "sem-titulo").slice(0, 80).replace(/[\\/:*?"<>|\u0000-\u001f]/g, "_").replace(/[. ]+$/, "");
+  return `${base || "sem-titulo"}.${ext}`;
+}
 const qaIpcCounts: Record<string, number> = {};
 let mainWindow: BrowserWindow | null = null;
 let jobWorker: Electron.UtilityProcess | null = null;
@@ -83,10 +132,12 @@ let jobTimer: ReturnType<typeof setInterval> | null = null;
 let jobStopping = false;
 let quitAfterAttachmentWorker = false;
 let clipperBridge: ClipperBridge | null = null;
+let raycastBridge: RaycastBridge | null = null;
 let transcriptionRepo:TranscriptionsRepo|null=null,transcriptionWorker:Electron.UtilityProcess|null=null,transcriptionBusy=false,transcriptionTimer:ReturnType<typeof setInterval>|null=null,transcriptionStopping=false;
 let transcriptionTestTimeout:number|null=null;
 let transcriptionConfig:{runtime:string;ffmpeg:string}|null=null;
 let clipperStopping=false;
+let raycastStopping=false;
 function getTranscriptionConfig(){if(transcriptionConfig)return transcriptionConfig;const local=process.env.LOCALAPPDATA??app.getPath("userData");const candidates=(process.env.PATH??"").split(path.delimiter).map(x=>path.join(x,"ffmpeg.exe"));const ffmpeg=candidates.find(fs.existsSync)??"ffmpeg.exe";return transcriptionConfig={runtime:path.join(local,"Caderno Tools","transcription","whisper.cpp-b5454"),ffmpeg};}
 function runNextTranscription(){if(transcriptionBusy||transcriptionStopping||!transcriptionRepo||!repos)return;const job=transcriptionRepo.queued();if(!job)return;transcriptionBusy=true;try{const a=repos.attachments.open(job.noteId,job.attachmentId);if(!a)throw new Error("Anexo não encontrado.");const cfg=getTranscriptionConfig(),runtime=path.resolve(cfg.runtime),jobDir=path.join(runtime,"jobs",job.id.replace(/-/g,""));
  const worker=utilityProcess.fork(path.join(__dirname,"transcription-worker.cjs"),[],{serviceName:"Caderno Transcrição Local",stdio:"ignore"});transcriptionWorker=worker;let settled=false;lifecycle("transcription-worker-start",{jobId:job.id,workerPath:path.join(__dirname,"transcription-worker.cjs")});
@@ -162,6 +213,7 @@ function createWindow(): BrowserWindow {
     minWidth: 900,
     minHeight: 560,
     title: "Caderno",
+    icon: path.join(__dirname, "../dist/caderno.png"),
     titleBarStyle: process.platform === "win32" ? "hidden" : "default",
     ...(process.platform === "win32" ? { titleBarOverlay: titleBarOverlayOptions(repos.meta.get("theme")) } : {}),
     backgroundColor: "#ffffff",
@@ -288,10 +340,13 @@ function registerHandlers(): void {
     "attachments:retry-job":({id})=>{const ok=repos.attachmentJobs.retry(id);runNextAttachmentJob();return ok;},
     "attachments:cancel-job":({id})=>{const ok=repos.attachmentJobs.cancel(id);if(ok&&runningAttachmentJobId===id)jobWorker?.postMessage({id,cancel:true});mainWindow?.webContents.send("attachment-jobs-changed");return ok;},
     "attachments:reindex":()=>repos.attachmentJobs.reindex(),
-    "tasks:list":(x)=>repos.tasks.list(x.filter),"tasks:create":(x)=>repos.tasks.create(x),"tasks:update":(x)=>repos.tasks.update(x),"tasks:delete":(x)=>repos.tasks.delete(x.id),"tasks:reminder-due":()=>repos.tasks.deliverDue(Date.now(),10),
+    "tasks:list":(x)=>repos.tasks.list(x.filter,Date.now(),x.priority),"tasks:create":(x)=>repos.tasks.create(x),"tasks:update":(x)=>repos.tasks.update(x),"tasks:delete":(x)=>repos.tasks.delete(x.id),"tasks:reminder-due":()=>repos.tasks.deliverDue(Date.now(),10),
     "events:list":(x)=>repos.events.list(x.startAt,x.endAt),"events:create":(x)=>repos.events.create(x),"events:update":(x)=>repos.events.update(x),"events:delete":(x)=>repos.events.delete(x.id),
     "notes:list": (input: ListNotesQuery) => repos.notes.list(input),
     "notes:get": (input: { id: string }) => repos.notes.get(input.id),
+    "notes:search":(x)=>repos.notes.search(x.query,x.limit),
+    "notes:backlinks":(x)=>repos.notes.backlinks(x.id),
+    "pdf:list":(x)=>repos.pdfAnnotations.list(x.storedName,x.page),"pdf:save":(x)=>repos.pdfAnnotations.save(x),"pdf:delete":(x)=>repos.pdfAnnotations.delete(x.id),
     "notes:find": (input: { query: string; limit: number }) => repos.notes.find(input.query, input.limit),
     "notes:create": (input) => repos.notes.create(input),
     "notes:update": async (input) => {
@@ -317,6 +372,8 @@ function registerHandlers(): void {
     "stacks:delete": (input) => repos.stacks.delete(input.id),
     "tags:list": () => repos.tags.list(),
     "tags:create": (input) => repos.tags.create(input.name),
+    "tags:rename": (input) => repos.tags.rename(input.id, input.name),
+    "tags:delete": (input) => repos.tags.remove(input.id),
     "tags:attach": (input) => repos.tags.attach(input.noteId, input.tagId),
     "tags:detach": (input) => repos.tags.detach(input.noteId, input.tagId),
     "counts:get": () => repos.counts.get(),
@@ -346,6 +403,64 @@ function registerHandlers(): void {
       if (error) throw new Error(`Não foi possível abrir o anexo: ${error}`);
       return found;
     },
+    "templates:list": (x) => repos.templates.list(x.query ?? ""),
+    "templates:get": (x) => repos.templates.get(x.id),
+    "templates:create-from-note": (x) => repos.templates.createFromNote(x.noteId, x),
+    "templates:update": (x) => repos.templates.update(x.id, x),
+    "templates:delete": (x) => repos.templates.delete(x.id),
+    "templates:restore-builtins": () => repos.templates.restoreBuiltins(),
+    "templates:apply": (x) => { const id = repos.templates.apply(x.id, x.notebookId ?? null); mainWindow?.webContents.send("attachment-jobs-changed"); return repos.notes.get(id); },
+    "export:begin": async (x) => {
+      const note = repos.notes.get(x.noteId);
+      if (!note) throw new Error("Nota não encontrada.");
+      for (const [token, item] of exportTokens) if (item.expiresAt < Date.now() && !item.busy) exportTokens.delete(token);
+      const ext = x.format === "pdf" ? "pdf" : "html";
+      const result = await showSaveDialogQa({ title: x.format === "pdf" ? "Exportar nota em PDF" : "Exportar nota em HTML", defaultPath: exportFileName(note.title, ext), filters: [x.format === "pdf" ? { name: "PDF", extensions: ["pdf"] } : { name: "Página HTML", extensions: ["html", "htm"] }] });
+      if (result.canceled || !result.filePath) return { canceled: true };
+      let filePath = path.resolve(result.filePath);
+      if (!(x.format === "pdf" ? /\.pdf$/i : /\.html?$/i).test(filePath)) filePath += `.${ext}`;
+      const token = crypto.randomUUID();
+      exportTokens.set(token, { noteId: x.noteId, format: x.format, filePath, expiresAt: Date.now() + 10 * 60_000, busy: false });
+      const pdfs = collectAssetRefs(note.contentHtml).filter(name => repos.attachments.media(name)?.mime === "application/pdf").map(storedName => ({ storedName, fileName: repos.attachments.exportInfo(storedName)?.fileName ?? storedName }));
+      return { canceled: false, token, filePath, format: x.format, pdfs };
+    },
+    "export:abort": (x) => { const item = exportTokens.get(x.token); if (item && !item.busy) exportTokens.delete(x.token); return true; },
+    "export:finish": async (x) => {
+      const job = exportTokens.get(x.token);
+      if (!job || job.expiresAt < Date.now()) { exportTokens.delete(x.token); throw new Error("Exportação expirada; tente novamente."); }
+      if (job.busy) throw new Error("Esta exportação já está em andamento.");
+      job.busy = true;
+      try {
+        // Conteúdo mais recente do banco (o renderer salva pendências antes de iniciar).
+        const note = repos.notes.markdownOfNote(job.noteId);
+        if (!note) throw new Error("Nota não encontrada.");
+        const referenced = new Set(collectAssetRefs(note.contentHtml));
+        const renders = new Map<string, PdfRender>();
+        for (const r of x.renders as { storedName: string; totalPages: number; error?: string; pages: { page: number; width: number; height: number; dataUrl: string }[] }[]) {
+          if (!referenced.has(r.storedName) || repos.attachments.media(r.storedName)?.mime !== "application/pdf") continue;
+          const pages = r.pages.filter(p => { const img = nativeImage.createFromDataURL(p.dataUrl); return !img.isEmpty() && img.getSize().width <= 4000 && img.getSize().height <= 6000; });
+          renders.set(r.storedName, { totalPages: r.totalPages, pages, error: r.error });
+        }
+        const { html, warnings } = buildExportHtml({
+          note: { title: note.title, contentHtml: note.contentHtml, notebookName: note.notebookName, tags: note.tags.map(t => t.name), createdAt: note.createdAt, updatedAt: note.updatedAt },
+          format: job.format, renders, fonts: exportFonts(), appVersion: app.getVersion(),
+          assets: {
+            media: name => repos.attachments.media(name),
+            fileName: name => repos.attachments.exportInfo(name)?.fileName ?? null,
+            annotations: name => repos.pdfAnnotations.listAll(name),
+            attachmentText: name => repos.attachments.exportInfo(name)?.text ?? null,
+            transcript: name => repos.attachments.exportInfo(name)?.transcript ?? null,
+          },
+        });
+        const data = job.format === "pdf" ? await htmlToPdf(html, { tempRoot: app.getPath("temp"), title: note.title || "Sem título" }) : Buffer.from(html, "utf8");
+        if (job.format === "pdf" && data.subarray(0, 5).toString("latin1") !== "%PDF-") throw new Error("O PDF gerado é inválido.");
+        writeFileAtomic(job.filePath, data, crypto.randomUUID());
+        lifecycle("note-exported", { format: job.format, bytes: data.length, warnings: warnings.length });
+        return { filePath: job.filePath, bytes: data.length, format: job.format, warnings };
+      } finally { exportTokens.delete(x.token); }
+    },
+    "app:qa-save-dialog": (x) => { if (!isQaTempProfile()) throw new Error("Canal disponível somente no perfil de QA temporário."); qaSaveDialogQueue.push(x); return qaSaveDialogQueue.length; },
+    "app:qa-export-state": () => { if (!isQaTempProfile()) throw new Error("Canal disponível somente no perfil de QA temporário."); return { openWindows: exportState.openWindows, tempDirs: [...exportState.tempDirs], pendingTokens: exportTokens.size, queuedDialogs: qaSaveDialogQueue.length }; },
     "export:markdown": async (input) => {
       const note = repos.notes.markdownOfNote(input.noteId);
       if (!note) return null;
@@ -425,10 +540,22 @@ function registerHandlers(): void {
       return { canceled: false, filePaths: result.filePaths };
     },
     "app:meta": () => ({ name: "caderno", version: app.getVersion(), userDataPath: app.getPath("userData"), platform: process.platform }),
+    "startup:get": () => ({ available: process.platform === "win32" && app.isPackaged, enabled: process.platform === "win32" && app.isPackaged ? app.getLoginItemSettings().openAtLogin : false }),
+    "startup:set": (input) => {
+      if (process.platform !== "win32" || !app.isPackaged) throw new Error("A inicialização automática está disponível no aplicativo instalado no Windows.");
+      app.setLoginItemSettings({ openAtLogin: input.enabled });
+      const enabled = app.getLoginItemSettings().openAtLogin;
+      if (enabled !== input.enabled) throw new Error("Não foi possível atualizar a inicialização automática no Windows.");
+      return { available: true, enabled };
+    },
     "clipper:status": () => clipperBridge?.status() ?? { enabled: false, paired: false, port: null },
     "clipper:enable": () => clipperBridge!.enable(),
     "clipper:pair": () => clipperBridge!.startPairing(),
     "clipper:revoke": async () => { await clipperBridge?.revoke(); return true; },
+    "raycast:status": () => raycastBridge?.status() ?? { enabled: false, paired: false, port: null },
+    "raycast:enable": () => raycastBridge!.enable(),
+    "raycast:pair": () => raycastBridge!.startPairing(),
+    "raycast:revoke": async () => { await raycastBridge?.revoke(); return true; },
     "app:qa-ipc-counts": () => process.env.CADERNO_QA_IPC === "1" ? { ...qaIpcCounts } : null,
   };
 
@@ -470,12 +597,32 @@ app.whenReady().then(() => {
     attachments: new AttachmentsRepo(db, files.attachments),
     backup: new BackupRepo(db, files.attachments),
     tasks:new TasksRepo(db),
+    pdfAnnotations:new PdfAnnotationsRepo(db),
+    templates:new TemplatesRepo(db, files.attachments),
     events:new EventsRepo(db),
     attachmentJobs:new AttachmentJobsRepo(db),
   };
   clipperBridge = new ClipperBridge({ notes: repos.notes, notebooks: repos.notebooks }, () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('clipper-note-created');
   });
+  raycastBridge = new RaycastBridge({ notes: repos.notes, notebooks: repos.notebooks, tasks: repos.tasks }, async noteId => {
+    let win = mainWindow;
+    if (!win || win.isDestroyed()) win = createWindow();
+    if (win.isMinimized()) win.restore();
+    win.show();
+    win.focus();
+    const sendOpen = () => {
+      if (win?.isDestroyed()) return;
+      win?.show();
+      win?.focus();
+      win?.webContents.send("caderno:open-note", noteId);
+    };
+    if (win.webContents.isLoading()) await new Promise<void>(resolve => win!.webContents.once("did-finish-load", () => { sendOpen(); resolve(); }));
+    else sendOpen();
+  }, () => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send("caderno-external-data-changed");
+  });
+  if (raycastBridge.hasStoredToken) void raycastBridge.enable().catch(error => lifecycle("raycast-auto-enable-failed", { message: error instanceof Error ? error.message : "Falha local" }));
   repos.attachmentJobs.recover();
   for(const staleId of transcriptionRepo.recover()){if(!/^[0-9a-f-]{36}$/i.test(staleId))continue;const root=path.resolve(getTranscriptionConfig().runtime,"jobs"),staging=path.resolve(root,staleId.replace(/-/g,""));if(staging.startsWith(`${root}${path.sep}`))try{fs.rmSync(staging,{recursive:true,force:true});}catch{}}
   protocol.handle("caderno-asset", request => {
@@ -519,6 +666,7 @@ app.on("window-all-closed", () => {
 });
 app.on("before-quit",event=>{
   if(transcriptionWorker&&!transcriptionStopping){event.preventDefault();transcriptionStopping=true;if(transcriptionTimer)clearInterval(transcriptionTimer);transcriptionWorker.postMessage({cancel:true});const worker=transcriptionWorker;setTimeout(()=>{if(transcriptionWorker===worker)worker.kill();},2500).unref();worker.once("exit",()=>{transcriptionStopping=false;app.quit();});return;}
+  if(raycastBridge?.status().enabled&&!raycastStopping){event.preventDefault();raycastStopping=true;void raycastBridge.close().catch(error=>lifecycle("raycast-close-error",{message:error instanceof Error?error.message:"Falha local"})).finally(()=>{raycastStopping=false;app.quit();});return;}
   if(jobStopping)return;
   lifecycle("before-quit", { runningAttachmentJobId });jobStopping=true;if(jobTimer)clearInterval(jobTimer);
   if(clipperBridge&&!clipperStopping){event.preventDefault();clipperStopping=true;void clipperBridge.close().catch(error=>lifecycle("clipper-close-error",{message:error instanceof Error?error.message:String(error)})).finally(()=>{clipperStopping=false;app.quit();});}

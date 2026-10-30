@@ -1,6 +1,6 @@
 # Caderno
 
-Versão **0.10.3**. A correção do Clipper foi validada pelo painel da extensão, pelo transporte local e pelo SQLite, incluindo captura por gesto nativo no Chrome temporário. Veja [CORRECAO_CLIPPER.md](CORRECAO_CLIPPER.md) para evidências e limites. Os relatórios históricos descrevem versões anteriores; modelos de voz, dados pessoais, instaladores e evidências locais não fazem parte do repositório.
+Versão **0.12.0**. Modelos de notas, consulta lado a lado, exportação PDF/HTML e seletores de cor do texto e marca-texto. Busca geral e comandos com **Ctrl+K**, referências entre notas, marcações de PDF e tarefas recorrentes com prioridade. Os relatórios históricos descrevem versões anteriores; modelos de voz, dados pessoais, instaladores e evidências locais não fazem parte do repositório.
 
 Aplicativo **desktop** de anotações para Windows, inspirado nos fluxos de
 organização do Evernote e com visual limpo e minimalista (próximo ao T3 Code).
@@ -19,10 +19,18 @@ Interface em português do Brasil.
 ## Funcionalidades
 
 - **Notas:** criar, editar, salvar automaticamente (debounce de 600 ms), reabrir, excluir.
+- **Modelos:** salvar a nota atual com cópias independentes dos anexos e das marcações PDF; buscar, visualizar, renomear, excluir e criar uma nova nota. Inclui reunião, projeto, plano de ação 5W2H e diário. O marcador `{{data}}` insere a data local. Migração SQLite 12 e backup JSON 8, com leitura dos backups anteriores.
+- **Lado a lado:** editor principal e outra nota em referência somente leitura; escolher, permutar e fechar, com scroll independente, largura ajustável e painéis empilhados em espaços estreitos.
+- **Cores do texto e marca-texto:** paletas, HEX personalizado, cores recentes e remoção independente da cor ou destaque, preservando fontes e outras formatações no trecho.
+- **Exportação PDF/HTML:** conteúdo salvo antes de exportar, arquivo HTML offline com imagens/fontes/mídia incorporadas e PDF A4 claro. PDFs anexados são rasterizados com marcações e comentários (até 60 páginas por anexo e 200 no total; excedentes geram aviso). No PDF exportado, o texto dos PDFs incorporados vira imagem, e áudio/vídeo aparecem como cartões estáticos. Os arquivos originais são preservados. Modelos e exportação exigem o app desktop.
 - **Cadernos:** criar, renomear, excluir e **mover notas** entre cadernos.
 - **Etiquetas:** criar, anexar/desanexar, filtrar por etiqueta.
 - **Favoritos** e **fixar no topo**.
-- **Busca** em título e corpo.
+- **Busca geral e comandos (Ctrl+K):** títulos, conteúdo e texto indexado de anexos, com trechos dos resultados; criação de notas/tarefas/eventos e navegação por teclado. Disponível também com as barras recolhidas.
+- **Pesquisa incremental:** a última palavra pode estar incompleta ("Crie cadern" encontra "Crie cadernos"); palavras anteriores são completas e todos os termos devem aparecer, em qualquer ordem. Caixa e acentos não diferenciam resultados. A paleta dá maior peso ao título, mantendo a ordenação escolhida na lista. Filtros por tipo sem texto também funcionam; resultados de arquivos preservam nome e trecho da fonte.
+- **Referências entre notas:** seção “Referências a esta nota” mostra links recebidos por UUID e acompanha renomeações e lixeira.
+- **PDFs:** use “Ampliar” na prévia para destacar áreas e adicionar, editar ou excluir comentários por página. Marcações ficam no SQLite e no backup JSON, separadas dos bytes do original.
+- **Tarefas:** prioridade baixa/normal/alta, filtro por prioridade e repetição diária/semanal/mensal. A conclusão cria uma única próxima ocorrência futura no fuso da tarefa; atrasos são pulados, o dia mensal original é preservado e meses curtos usam o último dia. Reabrir a ocorrência concluída não gera duplicação. Edite a próxima ocorrência para encerrar a repetição. Lembretes são entregues enquanto o app está aberto.
 - **Lixeira:** restaurar, excluir definitivamente (com confirmação) e esvaziar lixeira.
 - **Temas** claro/escuro persistentes.
 - **Anexos:** adicionar, abrir e remover arquivos por nota (armazenados em diretório dedicado).
@@ -50,6 +58,10 @@ npm run lint
 # Testes (Vitest, roda sob o runtime Node do Electron para o ABI do better-sqlite3)
 npm test
 
+# Pesquisa incremental e foco na paleta (Electron real, perfil isolado)
+npm run test:search
+npm run test:palette
+
 # Testes funcionais (Electron real + renderer + preload + IPC + SQLite isolado)
 npm run test:functional
 
@@ -62,15 +74,15 @@ npm run build
 # Executar o Electron a partir do build (dist/ + dist-electron/)
 npm run electron
 
-# Empacotar instalador Windows (NSIS) para release/
+# Empacotar instalador Windows (NSIS) para release-<versão>/
 npm run package
 ```
 
 > `npm run build` produz `dist/` (renderer) e `dist-electron/` (main + preload).
 > `npm run electron` carrega esses artefatos; `npm run dev` carrega o servidor vite.
 >
-> `npm run package` gera o instalador em `release/Caderno Setup <versão>.exe`
-> (junto de `release/win-unpacked/` com o executável desempacotado `Caderno.exe`).
+> `npm run package` gera o instalador em `release-<versão>/Caderno Setup <versão>.exe`
+> (junto de `release-<versão>/win-unpacked/` com o executável desempacotado `Caderno.exe`).
 
 ### Seed de demonstração (opcional)
 

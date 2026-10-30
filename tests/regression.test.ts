@@ -27,6 +27,15 @@ if (!(globalThis as unknown as { crypto?: { randomUUID?: () => string } }).crypt
 }
 
 describe("Regressão — independência título/conteúdo (bug: onUpdate sobrescrevia o título)", () => {
+  it("WebClient usa prefixo apenas na última palavra da busca", async () => {
+    localStorageMock.clear();
+    const c = new WebClient();
+    const hit = await c.createNote({ title: "Crie cadernos" });
+    const nonHit = await c.createNote({ title: "Criação caderneta" });
+    expect((await c.searchNotes("Crie cadern", 20)).map(note => note.id)).toContain(hit.id);
+    expect((await c.searchNotes("Crie cadern", 20)).map(note => note.id)).not.toContain(nonHit.id);
+  });
+
   it("WebClient.updateNote: conteúdo não altera título, título não altera conteúdo", async () => {
     localStorageMock.clear();
     const c = new WebClient();

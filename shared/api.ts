@@ -1,8 +1,10 @@
 import {
+  PdfListSchema, PdfSaveSchema,
   AttachTagInputSchema,
   CreateNoteInputSchema,
   CreateNotebookInputSchema,
   CreateTagInputSchema,
+  RenameTagInputSchema, DeleteTagInputSchema,
   FindNotesInputSchema, MoveNotebookStackInputSchema, RenameStackInputSchema, StackIdInputSchema, StackNameInputSchema,
   DetachTagInputSchema,
   FlagInputSchema,
@@ -20,6 +22,8 @@ import {
   UpdateNoteInputSchema,
   TaskCreateSchema,TaskUpdateSchema,TaskListSchema,EventCreateSchema,EventUpdateSchema,EventRangeSchema,AttachmentJobActionSchema,
   TranscriptionQaTimeoutSchema,
+  TemplateListSchema, TemplateFromNoteSchema, TemplateUpdateSchema, TemplateApplySchema,
+  ExportBeginSchema, ExportFinishSchema, ExportTokenSchema, QaSaveDialogSchema,
 } from "./ipc";
 import { z } from "zod";
 
@@ -29,6 +33,8 @@ const ChannelSchemas: Record<string, unknown> = {
   "notes:list": ListNotesQuerySchema,
   "notes:get": IdInputSchema,
   "notes:find": FindNotesInputSchema,
+  "notes:backlinks": IdInputSchema, "notes:search": FindNotesInputSchema,
+  "pdf:list":PdfListSchema,"pdf:save":PdfSaveSchema,"pdf:delete":IdInputSchema,
   "notes:create": CreateNoteInputSchema,
   "notes:update": UpdateNoteInputSchema,
   "notes:move": MoveNoteInputSchema,
@@ -49,6 +55,8 @@ const ChannelSchemas: Record<string, unknown> = {
   "stacks:delete": StackIdInputSchema,
   "tags:list": null,
   "tags:create": CreateTagInputSchema,
+  "tags:rename": RenameTagInputSchema,
+  "tags:delete": DeleteTagInputSchema,
   "tags:attach": AttachTagInputSchema,
   "tags:detach": DetachTagInputSchema,
   "counts:get": null,
@@ -67,9 +75,14 @@ const ChannelSchemas: Record<string, unknown> = {
   "dialog:save": SaveFileDialogInputSchema,
   "dialog:open": OpenFileDialogInputSchema,
   "app:meta": null,
+  "startup:get": null, "startup:set": z.object({ enabled: z.boolean() }),
   "app:qa-ipc-counts": null,
   "clipper:status": null, "clipper:enable": null, "clipper:pair": null, "clipper:revoke": null,
+  "raycast:status": null, "raycast:enable": null, "raycast:pair": null, "raycast:revoke": null,
   "attachments:jobs":null,"attachments:retry-job":AttachmentJobActionSchema,"attachments:cancel-job":AttachmentJobActionSchema,"attachments:reindex":null,
+  "templates:list":TemplateListSchema,"templates:get":IdInputSchema,"templates:create-from-note":TemplateFromNoteSchema,"templates:update":TemplateUpdateSchema,"templates:delete":IdInputSchema,"templates:apply":TemplateApplySchema,"templates:restore-builtins":null,
+  "export:begin":ExportBeginSchema,"export:finish":ExportFinishSchema,"export:abort":ExportTokenSchema,
+  "app:qa-save-dialog":QaSaveDialogSchema,"app:qa-export-state":null,
   "transcription:config":null,"transcription:configure":z.object({runtime:z.string().max(1000),ffmpeg:z.string().max(1000)}),"transcription:qa-timeout":TranscriptionQaTimeoutSchema,"transcription:jobs":z.object({noteId:z.guid()}),"transcription:list":z.object({noteId:z.guid()}),"transcription:start":z.object({noteId:z.guid(),attachmentId:z.number().int().positive(),language:z.enum(["pt","auto"])}),"transcription:cancel":z.object({id:z.guid()}),
 };
 

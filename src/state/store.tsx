@@ -32,8 +32,13 @@ export interface AppState {
   saveState: "saved" | "saving" | "error";
   lastSavedAt: number | null;
   error: string | null;
+  log: LogEntry[];
   initialized: boolean;
 }
+
+export interface LogEntry { id: number; at: number; level: "error" | "info"; message: string }
+let logSeq = 0;
+const appendLog = (log: LogEntry[], level: LogEntry["level"], message: string) => [{ id: ++logSeq, at: Date.now(), level, message }, ...log].slice(0, 100);
 
 export type Action =
   | { type: "init"; theme: "light" | "dark" }
@@ -47,7 +52,9 @@ export type Action =
   | { type: "order"; order: SortOrder }
   | { type: "search"; value: string }
   | { type: "saveState"; state: "saved" | "saving" | "error"; at?: number }
-  | { type: "error"; message: string | null };
+  | { type: "error"; message: string | null }
+  | { type: "log"; level: "error" | "info"; message: string }
+  | { type: "clearLog" };
 
 const initialState: AppState = {
   selection: { kind: "all" },
@@ -63,6 +70,7 @@ const initialState: AppState = {
   saveState: "saved",
   lastSavedAt: null,
   error: null,
+  log: [],
   initialized: false,
 };
 
@@ -91,7 +99,11 @@ function reducer(state: AppState, action: Action): AppState {
     case "saveState":
       return { ...state, saveState: action.state, lastSavedAt: action.state === "saved" ? (action.at ?? Date.now()) : state.lastSavedAt };
     case "error":
-      return { ...state, error: action.message };
+      return { ...state, error: action.message, log: action.message ? appendLog(state.log, "error", action.message) : state.log };
+    case "log":
+      return { ...state, log: appendLog(state.log, action.level, action.message) };
+    case "clearLog":
+      return { ...state, log: [] };
     default:
       return state;
   }
@@ -103,7 +115,7 @@ interface StoreApi {
   refreshNotes(): Promise<void>;
   refreshMeta(): Promise<void>;
   openNote(id: string | null): Promise<void>;
-  saveNoteContent(id: string, patch: { title?: string; contentHtml?: string }): Promise<void>;
+  saveNoteContent(id: string, patch: { title?: string; contentHtml?: string }): Promise<boolean>;
 }
 
 const StoreCtx = createContext<StoreApi | null>(null);
@@ -165,7 +177,11 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
     const refresh = () => { void refreshNotesRef.current(); void refreshMetaRef.current(); };
     window.addEventListener('focus', refresh);
     const unsubscribe = window.cadernoDesktop?.onClipperCapture?.(refresh);
-    return () => { window.removeEventListener('focus', refresh); unsubscribe?.(); };
+    const unsubscribeExternal = window.cadernoDesktop?.onExternalDataChange?.(() => {
+      refresh();
+      window.dispatchEvent(new Event('caderno:agenda-changed'));
+    });
+    return () => { window.removeEventListener('focus', refresh); unsubscribe?.(); unsubscribeExternal?.(); };
   }, []);
 
   useEffect(() => {
@@ -199,7 +215,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       const note = await client.getNote(id);
       dispatch({ type: "openNote", note, noteId: id });
     },
-    saveNoteContent: async (id: string, patch: { title?: string; contentHtml?: string }) => {
+    saveNoteContent: async (id: string, patch: { title?: string; contentHtml?: string }): Promise<boolean> => {
       dispatch({ type: "saveState", state: "saving" });
       try {
         const updated = await client.updateNote(id, patch);
@@ -208,12 +224,14 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
           if (stateRef.current.openNoteId === id) {
             dispatch({ type: "openNote", note: updated as NoteFull, noteId: id });
           }
-        } else {
-          dispatch({ type: "saveState", state: "error" });
+          return true;
         }
+        dispatch({ type: "saveState", state: "error" });
+        return false;
       } catch (err) {
         dispatch({ type: "saveState", state: "error" });
         dispatch({ type: "error", message: `${(err as Error).message}` });
+        return false;
       }
     },
   }), []);

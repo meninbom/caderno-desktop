@@ -1,6 +1,7 @@
 import Database from "better-sqlite3";
 import path from "node:path";
 import fs from "node:fs";
+import { seedBuiltinTemplates } from "./templates";
 
 export interface RepositoryFiles {
   database: string;
@@ -180,6 +181,25 @@ const MIGRATIONS = [
       CREATE INDEX idx_transcript_segments_parent ON transcript_segments(transcript_id,start_ms);
       CREATE TABLE transcription_jobs (id TEXT PRIMARY KEY, attachment_id INTEGER NOT NULL REFERENCES attachments(id) ON DELETE CASCADE, note_id TEXT NOT NULL REFERENCES notes(id) ON DELETE CASCADE, status TEXT NOT NULL CHECK(status IN ('queued','converting','transcribing','completed','failed','canceled')), progress INTEGER NOT NULL DEFAULT 0, stage TEXT NOT NULL DEFAULT 'queued', language TEXT NOT NULL, error TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
       CREATE INDEX idx_transcription_jobs_status ON transcription_jobs(status,created_at);`);
+  } },
+  { version:11, up(db:Database.Database):void {
+    db.exec(`ALTER TABLE tasks ADD COLUMN recurrence TEXT NOT NULL DEFAULT 'none' CHECK(recurrence IN ('none','daily','weekly','monthly'));
+      ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal' CHECK(priority IN ('low','normal','high'));
+      ALTER TABLE tasks ADD COLUMN time_zone TEXT NOT NULL DEFAULT 'UTC';
+      ALTER TABLE tasks ADD COLUMN recurrence_anchor TEXT;
+      ALTER TABLE tasks ADD COLUMN recurrence_spawned INTEGER NOT NULL DEFAULT 0;
+      ALTER TABLE tasks ADD COLUMN recurrence_parent_id TEXT;
+      CREATE UNIQUE INDEX idx_task_occurrence_parent ON tasks(recurrence_parent_id) WHERE recurrence_parent_id IS NOT NULL;
+      CREATE TABLE pdf_annotations(id TEXT PRIMARY KEY,attachment_id INTEGER NOT NULL REFERENCES attachments(id) ON DELETE CASCADE,page INTEGER NOT NULL CHECK(page>0),kind TEXT NOT NULL CHECK(kind IN ('highlight','comment')),rect TEXT NOT NULL,comment TEXT NOT NULL,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+      CREATE INDEX idx_pdf_annotations_page ON pdf_annotations(attachment_id,page);`);
+    db.prepare("UPDATE tasks SET time_zone=?").run(Intl.DateTimeFormat().resolvedOptions().timeZone);
+  } },
+  { version:12, up(db:Database.Database):void {
+    // Modelos de nota: mídias incorporadas ficam em BLOB para que o modelo não
+    // dependa da nota (ou do arquivo) de origem.
+    db.exec(`CREATE TABLE note_templates(id TEXT PRIMARY KEY,name TEXT NOT NULL CHECK(length(trim(name)) BETWEEN 1 AND 120),description TEXT NOT NULL DEFAULT '',note_title TEXT NOT NULL DEFAULT '',content_html TEXT NOT NULL DEFAULT '',content_text TEXT NOT NULL DEFAULT '',builtin_key TEXT UNIQUE,created_at INTEGER NOT NULL,updated_at INTEGER NOT NULL);
+      CREATE TABLE note_template_assets(template_id TEXT NOT NULL REFERENCES note_templates(id) ON DELETE CASCADE,token TEXT NOT NULL,file_name TEXT NOT NULL,mime_type TEXT NOT NULL,kind TEXT NOT NULL CHECK(kind IN ('image','file')),sha256 TEXT NOT NULL,byte_size INTEGER NOT NULL,data BLOB NOT NULL,annotations TEXT NOT NULL DEFAULT '[]',PRIMARY KEY(template_id,token));`);
+    seedBuiltinTemplates(db);
   } },
 ];
 

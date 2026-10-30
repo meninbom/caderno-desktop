@@ -1,3 +1,5 @@
+import { PdfSaveSchema, TaskCreateSchema } from '../../shared/ipc';
+import { localDateTimeInZone } from '../../shared/zoned-time';
 import crypto from "node:crypto";
 import type Database from "better-sqlite3";
 import fs from "node:fs";
@@ -5,6 +7,7 @@ import path from "node:path";
 import { extractVisibleText } from "./db";
 import type { ParsedEml } from "./eml";
 import { emlHtml } from "./eml";
+import { TemplatesRepo, restoreBackupTemplates, validateBackupTemplates, type BackupTemplate } from "./templates";
 
 export interface AttachmentRow {
   id: number;
@@ -133,6 +136,7 @@ export class AttachmentsRepo {
       .get(attachmentId, noteId) as { stored_name: string;kind:string } | undefined;
     if (!row) return false;
     if(row.kind==="image"&&this.db.prepare("SELECT 1 FROM notes WHERE content_html LIKE ? LIMIT 1").get(`%${row.stored_name}%`)) throw new Error("Esta imagem ainda é referenciada por uma nota. Remova a imagem do conteúdo primeiro; o arquivo é mantido para undo e lixeira.");
+    if(row.kind!=="image"&&this.db.prepare("SELECT 1 FROM notes WHERE content_html LIKE ? LIMIT 1").get(`%${row.stored_name}%`)) throw new Error("Este anexo está incorporado a uma nota. Remova-o do texto e aguarde o salvamento antes de excluir o arquivo.");
     const ok = this.db.prepare("DELETE FROM attachments WHERE id = ? AND note_id = ?").run(attachmentId, noteId).changes > 0;
     if (ok) {
       try {
@@ -142,6 +146,15 @@ export class AttachmentsRepo {
       }
     }
     return ok;
+  }
+
+  /** Dados auxiliares para exportação, sempre por nome interno registrado. */
+  exportInfo(storedName: string): { fileName: string; text: string | null; transcript: string | null } | null {
+    const row = this.db.prepare("SELECT id,file_name FROM attachments WHERE stored_name=?").get(storedName) as { id: number; file_name: string } | undefined;
+    if (!row) return null;
+    const text = this.db.prepare("SELECT content FROM attachment_text WHERE attachment_id=? AND source_kind!='transcription'").get(row.id) as { content: string } | undefined;
+    const transcript = this.db.prepare("SELECT text FROM transcripts WHERE attachment_id=?").get(row.id) as { text: string } | undefined;
+    return { fileName: row.file_name, text: text?.content ?? null, transcript: transcript?.text ?? null };
   }
 
   open(noteId: string, attachmentId: number): { filePath: string; fileName: string } | null {
@@ -172,10 +185,12 @@ export interface BackupPayload {
     tags: string[];
   }[];
   attachments?: { noteId:string; fileName:string; storedName:string; mimeType:string; kind:string; sha256:string; dataBase64:string }[];
-  tasks?: {id:string;noteId:string;title:string;done:boolean;dueAt:number|null;reminderAt:number|null;reminderState:'pending'|'delivered';createdAt:number;updatedAt:number}[];
+  pdfAnnotations?: (import("../../shared/ipc").PdfAnnotation)[];
+  tasks?: {recurrence?:import("../../shared/recurrence").Recurrence;priority?:import("../../shared/recurrence").Priority;timeZone?:string;recurrenceAnchor?:string|null;recurrenceSpawned?:number;recurrenceParentId?:string|null;id:string;noteId:string;title:string;done:boolean;dueAt:number|null;reminderAt:number|null;reminderState:'pending'|'delivered';createdAt:number;updatedAt:number}[];
   events?: {id:string;noteId:string|null;title:string;description:string;startAt:number;endAt:number;timeZone:string;allDay:boolean;createdAt:number;updatedAt:number}[];
   emlImports?: {messageKey:string;noteId:string;importedAt:number}[];
   clipperSources?: {noteId:string;sourceUrl:string;sourceTitle:string;capturedAt:number}[];
+  templates?: BackupTemplate[];
   transcripts?: {id:string;attachmentId:number;attachmentStoredName?:string;noteId:string;model:string;language:string;durationMs:number;text:string;createdAt:number;segments:{startMs:number;endMs:number;text:string}[]}[];
 }
 
@@ -214,7 +229,7 @@ export class BackupRepo {
     }
     return {
       app: "caderno",
-      schemaVersion: 6,
+      schemaVersion: 8,
       exportedAt: Date.now(),
       notebooks,
       stacks,
@@ -230,7 +245,9 @@ export class BackupRepo {
         updatedAt: n.updated_at,
         tags: tagsByNote.get(n.id) ?? [],
       })),
-      tasks:this.db.prepare("SELECT id,note_id AS noteId,title,is_done AS done,due_at AS dueAt,reminder_at AS reminderAt,reminder_state AS reminderState,created_at AS createdAt,updated_at AS updatedAt FROM tasks").all() as BackupPayload['tasks'],
+      templates:new TemplatesRepo(this.db,attachmentDir??"").dumpForBackup(), // mídias dos modelos vêm do BLOB no SQLite; o diretório de anexos não é lido
+      pdfAnnotations:this.db.prepare("SELECT p.id,a.stored_name AS storedName,p.page,p.kind,p.rect,p.comment,p.created_at AS createdAt,p.updated_at AS updatedAt FROM pdf_annotations p JOIN attachments a ON a.id=p.attachment_id ORDER BY p.created_at,p.id").all().map((r:any)=>({...r,rect:JSON.parse(r.rect)})),
+      tasks:this.db.prepare("SELECT id,note_id AS noteId,title,is_done AS done,due_at AS dueAt,reminder_at AS reminderAt,reminder_state AS reminderState,created_at AS createdAt,updated_at AS updatedAt,recurrence,priority,time_zone AS timeZone,recurrence_anchor AS recurrenceAnchor,recurrence_spawned AS recurrenceSpawned,recurrence_parent_id AS recurrenceParentId FROM tasks").all() as BackupPayload['tasks'],
       events:this.db.prepare("SELECT id,note_id AS noteId,title,description,start_at AS startAt,end_at AS endAt,time_zone AS timeZone,all_day AS allDay,created_at AS createdAt,updated_at AS updatedAt FROM calendar_events").all().map((x:any)=>({...x,allDay:!!x.allDay})) as BackupPayload['events'],
       emlImports:this.db.prepare("SELECT message_key AS messageKey,note_id AS noteId,imported_at AS importedAt FROM eml_imports ORDER BY imported_at").all() as BackupPayload['emlImports'],
       clipperSources:this.db.prepare("SELECT note_id AS noteId,source_url AS sourceUrl,source_title AS sourceTitle,captured_at AS capturedAt FROM clipper_sources ORDER BY captured_at").all() as BackupPayload['clipperSources'],
@@ -243,7 +260,7 @@ export class BackupRepo {
   }
 
   /** Valida e restaura backup dentro de uma transação: se qualquer item for inválido, nada muda. */
-  restore(json: string): { ok: true; notes: number; notebooks: number; assets:number; legacy:boolean } | { ok: false; error: string } {
+  restore(json: string): { ok: true; notes: number; notebooks: number; assets:number; templates:number; legacy:boolean } | { ok: false; error: string } {
     let parsed: unknown;
     try {
       parsed = JSON.parse(json);
@@ -253,6 +270,8 @@ export class BackupRepo {
     const errors = this.validate(parsed);
     if (errors) return { ok: false, error: `Backup inválido: ${errors}` };
     const payload = parsed as BackupPayload;
+    const templates=validateBackupTemplates(payload.templates,data=>inspectRaster(data).mime);
+    if(!templates.ok) return { ok:false, error:`Backup inválido: ${templates.error}` };
     // Decode, hash and inspect every asset before touching SQLite or profile files.
     const validatedAssets=(payload.attachments??[]).map(a=>({a,data:Buffer.from(a.dataBase64,"base64")}));
     let totalAssetBytes=0;
@@ -314,7 +333,12 @@ export class BackupRepo {
           this.db.prepare("INSERT OR IGNORE INTO note_tags (note_id, tag_id) VALUES (?, ?)").run(note.id, tag.id);
         }
       }
-      for(const task of payload.tasks??[]){if(!this.db.prepare('SELECT 1 FROM notes WHERE id=?').get(task.noteId))continue;this.db.prepare("INSERT INTO tasks(id,note_id,title,is_done,due_at,reminder_at,reminder_state,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET note_id=excluded.note_id,title=excluded.title,is_done=excluded.is_done,due_at=excluded.due_at,reminder_at=excluded.reminder_at,reminder_state=excluded.reminder_state,updated_at=excluded.updated_at").run(task.id,task.noteId,task.title,task.done?1:0,task.dueAt,task.reminderAt,task.reminderState,task.createdAt,task.updatedAt);}
+      for(const task of payload.tasks??[]){
+        if(!this.db.prepare('SELECT 1 FROM notes WHERE id=?').get(task.noteId))continue;
+        const fields='note_id,title,is_done,due_at,reminder_at,reminder_state,created_at,updated_at,recurrence,priority,time_zone,recurrence_anchor,recurrence_spawned,recurrence_parent_id';
+        const updates=fields.split(',').map(f=>`${f}=excluded.${f}`).join(',');
+        this.db.prepare(`INSERT INTO tasks(id,${fields}) VALUES(${Array(15).fill('?').join(',')}) ON CONFLICT(id) DO UPDATE SET ${updates}`).run(task.id,task.noteId,task.title,task.done?1:0,task.dueAt,task.reminderAt,task.reminderState,task.createdAt,task.updatedAt,task.recurrence??'none',task.priority??'normal',task.timeZone??Intl.DateTimeFormat().resolvedOptions().timeZone,task.recurrenceAnchor??(task.dueAt===null?null:localDateTimeInZone(task.dueAt,task.timeZone??Intl.DateTimeFormat().resolvedOptions().timeZone)),task.recurrenceSpawned??0,task.recurrenceParentId??null);
+      }
       for(const event of payload.events??[]){const noteId=event.noteId&&this.db.prepare('SELECT 1 FROM notes WHERE id=?').get(event.noteId)?event.noteId:null;this.db.prepare("INSERT INTO calendar_events(id,note_id,title,description,start_at,end_at,time_zone,all_day,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET note_id=excluded.note_id,title=excluded.title,description=excluded.description,start_at=excluded.start_at,end_at=excluded.end_at,time_zone=excluded.time_zone,all_day=excluded.all_day,updated_at=excluded.updated_at").run(event.id,noteId,event.title,event.description,event.startAt,event.endAt,event.timeZone,event.allDay?1:0,event.createdAt,event.updatedAt);}
       for(const imported of payload.emlImports??[]){if(this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(imported.noteId))this.db.prepare("INSERT OR REPLACE INTO eml_imports(message_key,note_id,imported_at) VALUES(?,?,?)").run(imported.messageKey,imported.noteId,imported.importedAt);}
       for(const clip of payload.clipperSources??[]){if(this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(clip.noteId)&&/^https?:\/\//i.test(clip.sourceUrl))this.db.prepare("INSERT OR IGNORE INTO clipper_sources(source_key,note_id,source_url,source_title,captured_at) VALUES(?,?,?,?,?)").run(crypto.createHash("sha256").update(clip.sourceUrl).digest("hex"),clip.noteId,clip.sourceUrl,clip.sourceTitle,clip.capturedAt);}
@@ -323,6 +347,12 @@ export class BackupRepo {
         if(this.db.prepare("SELECT 1 FROM attachments WHERE stored_name=?").get(a.storedName)) continue;
         this.db.prepare("INSERT INTO attachments(note_id,file_name,stored_name,byte_size,created_at,mime_type,sha256,kind) VALUES(?,?,?,?,?,?,?,?)").run(a.noteId,a.fileName,a.storedName,Buffer.byteLength(a.dataBase64,"base64"),Date.now(),a.mimeType,a.sha256,a.kind);
       }
+      for(const annotation of payload.pdfAnnotations??[]){
+        const attachment=this.db.prepare("SELECT id FROM attachments WHERE stored_name=? AND mime_type='application/pdf'").get(annotation.storedName) as {id:number}|undefined;
+        if(!attachment)throw new Error('PDF da marcação não encontrado.');
+        this.db.prepare('INSERT INTO pdf_annotations(id,attachment_id,page,kind,rect,comment,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET attachment_id=excluded.attachment_id,page=excluded.page,kind=excluded.kind,rect=excluded.rect,comment=excluded.comment,created_at=excluded.created_at,updated_at=excluded.updated_at').run(annotation.id,attachment.id,annotation.page,annotation.kind,JSON.stringify(annotation.rect),annotation.comment,annotation.createdAt,annotation.updatedAt);
+      }
+      restoreBackupTemplates(this.db,templates.templates);
       for(const t of payload.transcripts??[]){if(!this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(t.noteId))continue;const attachment=t.attachmentStoredName?this.db.prepare("SELECT id FROM attachments WHERE stored_name=? AND note_id=?").get(t.attachmentStoredName,t.noteId) as {id:number}|undefined:this.db.prepare("SELECT id FROM attachments WHERE id=? AND note_id=?").get(t.attachmentId,t.noteId) as {id:number}|undefined;if(!attachment)continue;const existing=this.db.prepare("SELECT id FROM transcripts WHERE attachment_id=?").get(attachment.id) as {id:string}|undefined;const transcriptId=existing?.id??t.id;this.db.prepare("INSERT INTO transcripts(id,attachment_id,note_id,model,language,duration_ms,text,created_at) VALUES(?,?,?,?,?,?,?,?) ON CONFLICT(attachment_id) DO UPDATE SET note_id=excluded.note_id,model=excluded.model,language=excluded.language,duration_ms=excluded.duration_ms,text=excluded.text,created_at=excluded.created_at").run(transcriptId,attachment.id,t.noteId,t.model,t.language,t.durationMs,t.text,t.createdAt);this.db.prepare("DELETE FROM transcript_segments WHERE transcript_id=?").run(transcriptId);const add=this.db.prepare("INSERT INTO transcript_segments(transcript_id,start_ms,end_ms,text) VALUES(?,?,?,?)");for(const s of t.segments)add.run(transcriptId,s.startMs,s.endMs,s.text);this.db.prepare("INSERT INTO attachment_text(attachment_id,note_id,source_name,source_kind,content,extractor_version,indexed_at) VALUES(?,?,?,'transcription',?,1,?) ON CONFLICT(attachment_id) DO UPDATE SET note_id=excluded.note_id,source_name=excluded.source_name,source_kind='transcription',content=excluded.content,extractor_version=1,indexed_at=excluded.indexed_at").run(attachment.id,t.noteId,"Transcrição local",t.text,t.createdAt);}
     });
     try {
@@ -340,19 +370,37 @@ export class BackupRepo {
     } catch(error) { for(const f of stageFiles) fs.rmSync(f,{force:true});for(const f of newlyWritten) fs.rmSync(f,{force:true});return {ok:false,error:`Restauração cancelada sem alterar o perfil: ${String(error)}`}; }
     const notebooks = this.db.prepare("SELECT COUNT(*) AS c FROM notebooks").get() as { c: number };
     const notes = this.db.prepare("SELECT COUNT(*) AS c FROM notes").get() as { c: number };
-    return { ok: true, notebooks: notebooks.c, notes: notes.c, assets:validatedAssets.length, legacy:payload.schemaVersion<3 };
+    return { ok: true, notebooks: notebooks.c, notes: notes.c, assets:validatedAssets.length, templates:templates.templates.length, legacy:payload.schemaVersion<3 };
   }
 
   private validate(value: unknown): string | null {
     if (typeof value !== "object" || value === null) return "payload não é um objeto";
     const p = value as Partial<BackupPayload>;
     if (p.app !== "caderno") return "campo app deve ser \"caderno\"";
-    if (typeof p.schemaVersion !== "number") return "schemaVersion ausente";
+    if (!Number.isInteger(p.schemaVersion)||p.schemaVersion!<1||p.schemaVersion!>8) return "schemaVersion incompatível";
     if (!Array.isArray(p.notes)) return "notes ausente";
     if (!Array.isArray(p.notebooks)) return "notebooks ausente";
     if ((p as BackupPayload).schemaVersion >= 3 && !Array.isArray((p as BackupPayload).attachments)) return "assets ausentes no backup versão 3";
     if ((p as BackupPayload).schemaVersion >= 4 && (!Array.isArray((p as BackupPayload).tasks)||!Array.isArray((p as BackupPayload).events))) return "tarefas/eventos ausentes no backup versão 4";
     if ((p as BackupPayload).schemaVersion >= 6 && !Array.isArray((p as BackupPayload).transcripts)) return "transcrições ausentes no backup versão 6";
+    if(p.schemaVersion!>=7&&!Array.isArray(p.pdfAnnotations))return 'marcações de PDF ausentes';
+    if(p.schemaVersion!>=8&&!Array.isArray(p.templates))return 'modelos ausentes no backup versão 8';
+    if(p.tasks!==undefined&&!Array.isArray(p.tasks))return 'tarefas inválidas';
+    const parentIds=new Set<string>();
+    for(const task of p.tasks??[]){
+      if(!task||!TaskCreateSchema.safeParse(task).success||![true,false,0,1].includes(task.done)||typeof task.id!=='string'||!['pending','delivered'].includes(task.reminderState)||!Number.isFinite(task.createdAt)||!Number.isFinite(task.updatedAt))return 'tarefa inválida';
+      if(task.recurrence&&task.recurrence!=='none'&&(task.dueAt===null||!task.recurrenceAnchor))return 'recorrência sem prazo ou data de origem';
+      if(task.recurrenceAnchor!==undefined&&task.recurrenceAnchor!==null&&!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(task.recurrenceAnchor))return 'data de origem inválida';
+      if(task.recurrenceSpawned!==undefined&&![0,1].includes(task.recurrenceSpawned))return 'estado da recorrência inválido';
+      if(task.recurrenceParentId){if(typeof task.recurrenceParentId!=='string'||parentIds.has(task.recurrenceParentId))return 'ocorrência duplicada';parentIds.add(task.recurrenceParentId);}
+    }
+    if(p.pdfAnnotations!==undefined&&(!Array.isArray(p.pdfAnnotations)||p.pdfAnnotations.length>100000))return 'marcações inválidas';
+    const annotationIds=new Set<string>();
+    for(const annotation of p.pdfAnnotations??[]){
+      if(!annotation||!PdfSaveSchema.safeParse(annotation).success||typeof annotation.id!=='string'||annotationIds.has(annotation.id)||!Number.isFinite(annotation.createdAt)||!Number.isFinite(annotation.updatedAt))return 'marcação de PDF inválida';
+      if(!(p.attachments??[]).some(a=>a.storedName===annotation.storedName&&a.mimeType==='application/pdf'))return 'PDF da marcação ausente';
+      annotationIds.add(annotation.id);
+    }
     const transcriptRows=(p as BackupPayload).transcripts;if(transcriptRows!==undefined&&(!Array.isArray(transcriptRows)||transcriptRows.some(t=>!t||typeof t.id!=="string"||typeof t.text!=="string"||!Array.isArray(t.segments))))return "transcrição inválida";
     if ((p as BackupPayload).emlImports !== undefined && !Array.isArray((p as BackupPayload).emlImports)) return "lista de importações EML inválida";
     if ((p as BackupPayload).clipperSources !== undefined && (!Array.isArray((p as BackupPayload).clipperSources) || (p as BackupPayload).clipperSources!.some(c=>!c||typeof c.noteId!=="string"||typeof c.sourceUrl!=="string"||typeof c.sourceTitle!=="string"||typeof c.capturedAt!=="number"))) return "lista de fontes do Clipper inválida";

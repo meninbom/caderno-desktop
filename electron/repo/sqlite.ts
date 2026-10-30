@@ -1,3 +1,6 @@
+import { nextOccurrence } from '../../shared/recurrence';
+import { localDateTimeInZone } from '../../shared/zoned-time';
+import type { ChannelInputs, Task } from '../../shared/ipc';
 import Database from "better-sqlite3";
 import { NoteFull, NoteMeta, ListNotesQuery, Notebook, Tag, SidebarCounts, SortOrder, NotebookStack, NoteLinkTarget, AttachmentJob } from "../../shared/ipc";
 import { extractPreviewHtml, extractVisibleText } from "./db";
@@ -5,6 +8,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { parseSearchQuery, toFtsExpression } from "../../shared/search";
+import { normalizeTagName, tagKey } from "../../shared/tags";
 
 interface NoteRow {
   id: string;
@@ -94,15 +98,21 @@ export class NotesRepo {
     if (q.query && q.query.trim()) {
       const parsed = parseSearchQuery(q.query);
       const expression = toFtsExpression(parsed.text);
-      if(parsed.type==='attachment'&&!expression) where.push("EXISTS (SELECT 1 FROM attachment_text_fts af WHERE af.note_id=n.id)");
+      if (parsed.text && !expression) return [];
       if (expression) {
         if (parsed.type === "attachment") {
           where.push("n.id IN (SELECT note_id FROM attachment_text_fts WHERE attachment_text_fts MATCH ?)"); params.push(expression);
         } else if (parsed.type === "transcription") {
           where.push("n.id IN (SELECT note_id FROM attachment_text_fts WHERE attachment_text_fts MATCH ? AND source_kind='transcription')"); params.push(expression);
+        } else if (parsed.type === "note") {
+          where.push("n.id IN (SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?)"); params.push(expression);
         } else {
           where.push("(n.id IN (SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?) OR n.id IN (SELECT note_id FROM attachment_text_fts WHERE attachment_text_fts MATCH ?))"); params.push(expression, expression);
         }
+      } else if (parsed.type === "attachment") {
+        where.push("EXISTS (SELECT 1 FROM attachment_text_fts af WHERE af.note_id=n.id)");
+      } else if (parsed.type === "transcription") {
+        where.push("EXISTS (SELECT 1 FROM attachment_text_fts af WHERE af.note_id=n.id AND af.source_kind='transcription')");
       }
       if (parsed.notebook) {
         where.push("EXISTS (SELECT 1 FROM notebooks sn WHERE sn.id=n.notebook_id AND sn.name LIKE ? ESCAPE '\\' COLLATE NOCASE)");
@@ -114,7 +124,6 @@ export class NotesRepo {
       }
       if (parsed.before) { where.push("n.created_at < ?"); params.push(Date.parse(`${parsed.before}T00:00:00.000Z`)); }
       if (parsed.after) { where.push("n.created_at >= ?"); params.push(Date.parse(`${parsed.after}T00:00:00.000Z`)); }
-      if (parsed.type === "note") { where.push("n.id IN (SELECT note_id FROM notes_fts WHERE notes_fts MATCH ?)"); params.push(expression); }
     }
     const sql = `SELECT ${META_COLS} FROM notes n WHERE ${where.join(" AND ")} ORDER BY ${ORDER[q.order ?? "updated_desc"]}`;
     const rows = this.db.prepare(sql).all(...params) as unknown as NoteRow[];
@@ -137,11 +146,35 @@ export class NotesRepo {
     return { ...meta, contentHtml: row.content_html };
   }
 
+  search(query:string,limit:number):NoteMeta[]{
+    const results=this.list({view:'all',query});
+    const parsed=parseSearchQuery(query),expression=toFtsExpression(parsed.text);
+    if(expression&&parsed.type!=='attachment'&&parsed.type!=='transcription'){
+      const ranked=this.db.prepare("SELECT note_id AS id, bm25(notes_fts,0,8.0,1.0) AS rank FROM notes_fts WHERE notes_fts MATCH ?").all(expression) as {id:string;rank:number}[];
+      const ranks=new Map(ranked.map(row=>[row.id,row.rank]));
+      results.sort((a,b)=>(ranks.get(a.id)??Infinity)-(ranks.get(b.id)??Infinity));
+    }
+    const limited=results.slice(0,limit);
+    if(expression)for(const item of limited){
+      const hit=this.db.prepare("SELECT snippet(notes_fts,2,'','','…',14) AS text FROM notes_fts WHERE notes_fts MATCH ? AND note_id=? LIMIT 1").get(expression,item.id) as {text:string}|undefined;
+      if(hit&&!item.matchSource)item.matchSnippet=hit.text;
+    }
+    return limited;
+  }
+  backlinks(id:string):NoteLinkTarget[]{
+    const rows=this.db.prepare('SELECT id,title,content_html,content_text FROM notes WHERE deleted_at IS NULL AND id<>? AND content_html LIKE ? ORDER BY updated_at DESC').all(id,`%caderno-note://${id}%`) as {id:string;title:string;content_html:string;content_text:string}[];
+    const href=new RegExp(`href\\s*=\\s*["']caderno-note://${id}["']`,'i');
+    return rows.filter(r=>href.test(r.content_html)).map(r=>({id:r.id,title:r.title,preview:extractPreviewHtml(r.content_text)}));
+  }
+
   find(query: string, limit: number): NoteLinkTarget[] {
-    const term = query.trim();
-    if (!term) return [];
-    const rows = this.db.prepare(`SELECT id,title,content_text FROM notes WHERE deleted_at IS NULL AND (title LIKE ? ESCAPE '\\' OR content_text LIKE ? ESCAPE '\\') ORDER BY updated_at DESC LIMIT ?`)
-      .all(`%${term.replace(/[\\%_]/g, "\\$&").replace(/\[\]/g, "")}%`, `%${term.replace(/[\\%_]/g, "\\$&")}%`, limit) as { id: string; title: string; content_text: string }[];
+    const expression = toFtsExpression(query.trim());
+    if (!expression) return [];
+    const rows = this.db.prepare(`SELECT n.id,n.title,n.content_text FROM notes n
+      JOIN notes_fts ON notes_fts.note_id=n.id
+      WHERE notes_fts MATCH ? AND n.deleted_at IS NULL
+      ORDER BY bm25(notes_fts,0,8.0,1.0),n.updated_at DESC LIMIT ?`)
+      .all(expression, limit) as { id: string; title: string; content_text: string }[];
     return rows.map(r => ({ id: r.id, title: r.title || "Sem título", preview: extractPreviewHtml(r.content_text) }));
   }
 
@@ -270,19 +303,43 @@ export class TranscriptionsRepo {
 
 export class TasksRepo {
   constructor(private db: Database.Database) {}
-  list(filter:'today'|'upcoming'|'overdue'|'completed'|'all',now=Date.now()): import('../../shared/ipc').Task[] {
-    const d=new Date(now); d.setHours(0,0,0,0); const start=d.getTime(), next=new Date(d); next.setDate(next.getDate()+1); const end=next.getTime();const week=new Date(next);week.setDate(week.getDate()+7);const weekEnd=week.getTime();
-    let where='n.deleted_at IS NULL', args:unknown[]=[];
+  private columns=`t.id,t.note_id AS noteId,n.title AS noteTitle,t.title,t.is_done AS done,t.due_at AS dueAt,t.reminder_at AS reminderAt,t.reminder_state AS reminderState,t.created_at AS createdAt,t.updated_at AS updatedAt,t.recurrence,t.priority,t.time_zone AS timeZone`;
+  list(filter:ChannelInputs['tasks:list']['filter'],now=Date.now(),priority='all'):Task[]{
+    const d=new Date(now);d.setHours(0,0,0,0);const start=d.getTime(),next=new Date(d);next.setDate(next.getDate()+1);const end=next.getTime(),week=new Date(next);week.setDate(week.getDate()+7);
+    let where='n.deleted_at IS NULL';const args:unknown[]=[];
     if(filter==='completed')where+=' AND t.is_done=1';
-    if(filter==='today'){where+=' AND t.is_done=0 AND t.due_at>=? AND t.due_at<?';args=[start,end];}
-    if(filter==='upcoming'){where+=' AND t.is_done=0 AND t.due_at>=? AND t.due_at<?';args=[end,weekEnd];}
-    if(filter==='overdue'){where+=' AND t.is_done=0 AND t.due_at IS NOT NULL AND t.due_at<?';args=[start];}
-    return this.db.prepare(`SELECT t.id,t.note_id AS noteId,n.title AS noteTitle,t.title,t.is_done AS done,t.due_at AS dueAt,t.reminder_at AS reminderAt,t.reminder_state AS reminderState,t.created_at AS createdAt,t.updated_at AS updatedAt FROM tasks t JOIN notes n ON n.id=t.note_id WHERE ${where} ORDER BY t.is_done,t.due_at IS NULL,t.due_at,t.created_at`).all(...args).map((r:any)=>({...r,done:!!r.done}));
+    if(filter==='today'){where+=' AND t.is_done=0 AND t.due_at>=? AND t.due_at<?';args.push(start,end);}
+    if(filter==='upcoming'){where+=' AND t.is_done=0 AND t.due_at>=? AND t.due_at<?';args.push(end,week.getTime());}
+    if(filter==='overdue'){where+=' AND t.is_done=0 AND t.due_at<?';args.push(start);}
+    if(priority!=='all'){where+=' AND t.priority=?';args.push(priority);}
+    return this.db.prepare(`SELECT ${this.columns} FROM tasks t JOIN notes n ON n.id=t.note_id WHERE ${where} ORDER BY t.is_done,CASE t.priority WHEN 'high' THEN 0 WHEN 'normal' THEN 1 ELSE 2 END,t.due_at IS NULL,t.due_at,t.created_at`).all(...args).map((r:any)=>({...r,done:!!r.done}));
   }
-  create(x:{noteId:string;title:string;dueAt:number|null;reminderAt:number|null}):string {const id=uuid(),now=Date.now();this.db.prepare("INSERT INTO tasks(id,note_id,title,due_at,reminder_at,created_at,updated_at) SELECT ?,id,?,?,?,?,? FROM notes WHERE id=? AND deleted_at IS NULL").run(id,x.title,x.dueAt,x.reminderAt,now,now,x.noteId);if(!this.db.prepare('SELECT 1 FROM tasks WHERE id=?').get(id))throw new Error('Nota não encontrada ou na lixeira');return id;}
-  update(x:{id:string;noteId?:string;title?:string;dueAt?:number|null;reminderAt?:number|null;done?:boolean}):boolean {const old=this.db.prepare('SELECT reminder_at FROM tasks WHERE id=?').get(x.id) as {reminder_at:number|null}|undefined;if(!old)return false;if(x.noteId!==undefined&&!this.db.prepare('SELECT 1 FROM notes WHERE id=? AND deleted_at IS NULL').get(x.noteId))throw new Error('Nota não encontrada ou na lixeira');this.db.prepare("UPDATE tasks SET note_id=CASE WHEN ? THEN ? ELSE note_id END,title=COALESCE(?,title),due_at=CASE WHEN ? THEN ? ELSE due_at END,reminder_at=CASE WHEN ? THEN ? ELSE reminder_at END,is_done=COALESCE(?,is_done),reminder_state=CASE WHEN ? THEN 'pending' ELSE reminder_state END,updated_at=? WHERE id=?").run(x.noteId!==undefined?1:0,x.noteId??null,x.title??null,x.dueAt!==undefined?1:0,x.dueAt??null,x.reminderAt!==undefined?1:0,x.reminderAt??null,x.done===undefined?null:x.done?1:0,x.reminderAt!==undefined?1:0,Date.now(),x.id);return true;}
+  create(x:ChannelInputs['tasks:create']):string{
+    const id=uuid(),now=Date.now(),rule=x.recurrence??'none',zone=x.timeZone??Intl.DateTimeFormat().resolvedOptions().timeZone;
+    if(rule!=='none'&&x.dueAt===null)throw new Error('Defina um prazo para repetir a tarefa.');
+    const anchor=x.dueAt===null?null:localDateTimeInZone(x.dueAt,zone);
+    this.db.prepare('INSERT INTO tasks(id,note_id,title,due_at,reminder_at,recurrence,priority,time_zone,recurrence_anchor,created_at,updated_at) SELECT ?,id,?,?,?,?,?,?,?,?,? FROM notes WHERE id=? AND deleted_at IS NULL').run(id,x.title,x.dueAt,x.reminderAt,rule,x.priority??'normal',zone,anchor,now,now,x.noteId);
+    if(!this.db.prepare('SELECT 1 FROM tasks WHERE id=?').get(id))throw new Error('Nota não encontrada ou na lixeira');return id;
+  }
+  update(x:ChannelInputs['tasks:update'],now=Date.now()):boolean{return this.db.transaction(()=>{
+    const old=this.db.prepare('SELECT * FROM tasks WHERE id=?').get(x.id) as any;if(!old)return false;
+    const noteId=x.noteId??old.note_id;
+    if(!this.db.prepare('SELECT 1 FROM notes WHERE id=? AND deleted_at IS NULL').get(noteId))throw new Error('Nota não encontrada ou na lixeira');
+    const rule=x.recurrence??old.recurrence,due=x.dueAt===undefined?old.due_at:x.dueAt,zone=x.timeZone??old.time_zone,done=x.done===undefined?!!old.is_done:x.done;
+    if(rule!=='none'&&due===null)throw new Error('Defina um prazo para repetir a tarefa.');
+    const changed=due!==old.due_at||rule!==old.recurrence||zone!==old.time_zone;
+    const anchor=due===null?null:changed||!old.recurrence_anchor?localDateTimeInZone(due,zone):old.recurrence_anchor;
+    const reminder=x.reminderAt===undefined?old.reminder_at:x.reminderAt;
+    this.db.prepare('UPDATE tasks SET note_id=?,title=?,due_at=?,reminder_at=?,is_done=?,reminder_state=?,recurrence=?,priority=?,time_zone=?,recurrence_anchor=?,updated_at=? WHERE id=?').run(noteId,x.title??old.title,due,reminder,done?1:0,x.reminderAt===undefined?old.reminder_state:'pending',rule,x.priority??old.priority,zone,anchor,now,x.id);
+    if(done&&!old.is_done&&!old.recurrence_spawned&&rule!=='none'){
+      const next=nextOccurrence(rule,anchor,due,now,zone);
+      this.db.prepare("INSERT INTO tasks(id,note_id,title,due_at,reminder_at,recurrence,priority,time_zone,recurrence_anchor,recurrence_parent_id,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)").run(uuid(),noteId,x.title??old.title,next,reminder===null?null:next+(reminder-due),rule,x.priority??old.priority,zone,anchor,x.id,now,now);
+      this.db.prepare('UPDATE tasks SET recurrence_spawned=1 WHERE id=?').run(x.id);
+    }
+    return true;
+  })();}
   delete(id:string):boolean{return this.db.prepare('DELETE FROM tasks WHERE id=?').run(id).changes>0;}
-  deliverDue(now:number,limit=10):import('../../shared/ipc').Task[]{const tx=this.db.transaction(()=>{const rows=this.db.prepare("SELECT t.id FROM tasks t JOIN notes n ON n.id=t.note_id WHERE t.is_done=0 AND n.deleted_at IS NULL AND t.reminder_state='pending' AND t.reminder_at<=? ORDER BY t.reminder_at LIMIT ?").all(now,limit) as {id:string}[];for(const r of rows)this.db.prepare("UPDATE tasks SET reminder_state='delivered',updated_at=? WHERE id=?").run(now,r.id);return rows.map(r=>this.db.prepare('SELECT t.id,t.note_id AS noteId,n.title AS noteTitle,t.title,t.is_done AS done,t.due_at AS dueAt,t.reminder_at AS reminderAt,t.reminder_state AS reminderState,t.created_at AS createdAt,t.updated_at AS updatedAt FROM tasks t JOIN notes n ON n.id=t.note_id WHERE t.id=?').get(r.id) as any);});return tx();}
+  deliverDue(now:number,limit=10):Task[]{return this.db.transaction(()=>{const rows=this.db.prepare("SELECT t.id FROM tasks t JOIN notes n ON n.id=t.note_id WHERE t.is_done=0 AND n.deleted_at IS NULL AND t.reminder_state='pending' AND t.reminder_at<=? ORDER BY t.reminder_at LIMIT ?").all(now,limit) as {id:string}[];return rows.map(r=>{this.db.prepare("UPDATE tasks SET reminder_state='delivered',updated_at=? WHERE id=?").run(now,r.id);const task=this.db.prepare(`SELECT ${this.columns} FROM tasks t JOIN notes n ON n.id=t.note_id WHERE t.id=?`).get(r.id) as Task;return {...task,done:!!task.done}});})();}
 }
 
 export class EventsRepo {
@@ -379,6 +436,9 @@ export class TagsRepo {
   }
 
   create(name: string): Tag | null {
+    name = normalizeTagName(name);
+    if (!name || name.length > 80) throw new Error("Use um nome de etiqueta entre 1 e 80 caracteres.");
+    if (this.hasName(name)) return null;
     try {
       const result = this.db.prepare("INSERT INTO tags (name) VALUES (?)").run(name);
       return { id: Number(result.lastInsertRowid), name, noteCount: 0 };
@@ -386,6 +446,23 @@ export class TagsRepo {
       if (err instanceof Error && err.message.includes("UNIQUE")) return null;
       throw err;
     }
+  }
+
+  private hasName(name: string, exceptId?: number): boolean {
+    const rows = this.db.prepare("SELECT id, name FROM tags").all() as { id: number; name: string }[];
+    return rows.some(row => row.id !== exceptId && tagKey(row.name) === tagKey(name));
+  }
+
+  rename(id: number, name: string): Tag | null {
+    name = normalizeTagName(name);
+    if (!name || name.length > 80) throw new Error("Use um nome de etiqueta entre 1 e 80 caracteres.");
+    if (this.hasName(name, id)) return null;
+    if (!this.db.prepare("UPDATE tags SET name = ? WHERE id = ?").run(name, id).changes) throw new Error("Etiqueta não encontrada.");
+    return this.list().find(tag => tag.id === id) ?? null;
+  }
+
+  remove(id: number): boolean {
+    return this.db.prepare("DELETE FROM tags WHERE id = ?").run(id).changes > 0;
   }
 
   attach(noteId: string, tagId: number): boolean {

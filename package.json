@@ -1,12 +1,12 @@
 {
   "name": "caderno",
-  "version": "0.10.3",
+  "version": "0.12.1",
   "description": "App desktop de anotações inspirado no Evernote",
   "main": "dist-electron/main.cjs",
   "scripts": {
     "dev": "cross-env CADERNO_DEV=1 concurrently -k \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "dev:web": "vite",
-    "build": "tsc -b && vite build && node scripts/build-electron.mjs",
+    "build": "node scripts/build-icon.cjs && tsc -b && vite build && node scripts/build-electron.mjs",
     "build:web": "tsc -b && vite build",
     "preview": "vite preview",
     "electron": "electron .",
@@ -16,7 +16,10 @@
     "postinstall": "electron-builder install-app-deps",
     "package": "npm run build && electron-builder",
     "test:functional": "node scripts/test-functional.mjs",
+    "test:search": "node scripts/test-search.mjs",
+    "test:palette": "node scripts/test-command-palette.mjs",
     "test:clipper": "node scripts/test-clipper-integration.mjs",
+    "test:raycast": "node scripts/test-raycast-integration.mjs",
     "verify": "npm run lint && npm test && npm run build && npm run test:functional && npm run test:clipper && npm run test:transcription",
     "test:transcription": "node scripts/test-transcription-integration.mjs"
   },
@@ -70,7 +73,7 @@
     "appId": "com.caderno.app",
     "productName": "Caderno",
     "directories": {
-      "output": "release-0.10.3"
+      "output": "release-0.12.1"
     },
     "files": [
       "dist/**/*",
@@ -82,7 +85,13 @@
     ],
     "win": {
       "target": "nsis",
-      "signAndEditExecutable": false
+      "signAndEditExecutable": true,
+      "icon": "build/icon.ico"
+    },
+    "nsis": {
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "installerHeaderIcon": "build/icon.ico"
     }
   },
   "overrides": {

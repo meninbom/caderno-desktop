@@ -1,0 +1,56 @@
+{
+  "$schema": "https://www.raycast.com/schemas/extension.json",
+  "name": "caderno-local",
+  "title": "Caderno",
+  "description": "Busque notas locais, abra-as no Caderno e crie notas e tarefas.",
+  "icon": "icon.png",
+  "author": "caderno-local",
+  "license": "MIT",
+  "platforms": ["Windows"],
+  "categories": ["Productivity"],
+  "commands": [
+    {
+      "name": "search-notes",
+      "title": "Buscar Notas",
+      "subtitle": "Caderno",
+      "description": "Busque notas locais, veja prévias e abra uma nota no Caderno.",
+      "mode": "view"
+    },
+    {
+      "name": "create-note",
+      "title": "Criar Nota",
+      "subtitle": "Caderno",
+      "description": "Crie uma nota de texto e escolha um caderno.",
+      "mode": "view"
+    },
+    {
+      "name": "create-task",
+      "title": "Criar Tarefa",
+      "subtitle": "Caderno",
+      "description": "Escolha uma nota e crie uma tarefa com prioridade.",
+      "mode": "view"
+    },
+    {
+      "name": "pair-caderno",
+      "title": "Conexão Caderno",
+      "subtitle": "Pareamento local",
+      "description": "Pareie este Raycast com um código temporário do Caderno e gerencie a credencial local.",
+      "mode": "view"
+    }
+  ],
+  "scripts": {
+    "build": "ray build -e dist",
+    "dev": "ray develop",
+    "bundle": "ray bundle -o caderno-local.rayext",
+    "test:client": "tsc --target ES2022 --lib ES2022,DOM --module commonjs --moduleResolution node --strict --skipLibCheck --types node --outDir test-dist src/api-transport.ts src/create-task-form.ts && node scripts/test-client-transport.cjs",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@raycast/api": "2.10.1"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "@types/react": "^19.3.0",
+    "typescript": "^5.9.3"
+  }
+}

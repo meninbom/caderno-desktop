@@ -4,6 +4,8 @@ import { AppMeta } from "./api";
 /** Contexto do renderer: preload expõe esta ponte mínima e tipada. */
 export interface RendererBridge {
   onClipperCapture?(listener:()=>void):()=>void;
+  onExternalDataChange?(listener:()=>void):()=>void;
+  onOpenNote?(listener:(noteId:string)=>void):()=>void;
   invoke(channel: string, input: unknown): Promise<{ ok: true; data: unknown } | { ok: false; error: string }>;
   onReminder?(listener:(kind:'click'|'fallback',value:string)=>void):()=>void;
   onTranscriptionJobsChanged?(listener:(noteId:string)=>void):()=>void;
@@ -26,6 +28,8 @@ export const CHANNEL_NAMES: ChannelName[] = [
   "counts:get", "theme:get", "theme:set", "attachments:list", "attachments:save",
   "attachments:delete", "attachments:open", "export:markdown", "import:markdown",
   "backup:save", "backup:restore", "dialog:save", "dialog:open", "app:meta", "attachments:jobs", "attachments:retry-job", "attachments:cancel-job", "attachments:reindex",
+  "raycast:status", "raycast:enable", "raycast:pair", "raycast:revoke",
+  "startup:get", "startup:set",
 ];
 
 export interface AppRootInfo {

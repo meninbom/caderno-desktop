@@ -19,7 +19,7 @@ try {
     args: [], env, timeout: 30000,
   });
   const page = await app.firstWindow();
-  await page.getByRole('button', { name: 'Notas' }).waitFor({ timeout: 15000 });
+  await page.getByRole('button', { name: /^Notas\b/ }).waitFor({ timeout: 15000 });
   await page.getByRole('button', { name: 'Mais ações' }).click();
   await page.getByRole('menuitem', { name: 'Salvar backup' }).waitFor();
   await page.getByRole('menuitem',{name:'Web Clipper'}).click();
@@ -40,7 +40,7 @@ try {
   await waitUntil(async()=>{const jobs=await invoke(page,'attachments:jobs');return jobs.find(item=>item.id===job.id&&item.status==='cancel_requested');},'cancelamento OCR persistido');
   await app.close();app=null;
   app=await electron.launch({executablePath:path.join(root,packageDir,'win-unpacked','Caderno.exe'),args:[],env,timeout:30000});
-  const restartedPage=await app.firstWindow();await restartedPage.getByRole('button',{name:'Notas'}).waitFor({timeout:15000});
+  const restartedPage=await app.firstWindow();await restartedPage.getByRole('button',{name:/^Notas\b/}).waitFor({timeout:15000});
   const recovered=await waitUntil(async()=>{const jobs=await invoke(restartedPage,'attachments:jobs');const item=jobs.find(value=>value.id===job.id);return item&&['completed','error'].includes(item.status)?item:null;},'OCR retomar após restart empacotado',60000);
   if(recovered.status!=='completed')throw new Error(`OCR após restart empacotado terminou em erro: ${recovered.error}`);
   const matches=await invoke(restartedPage,'notes:list',{view:'all',query:'CANCEL PIPELINE type:attachment'});

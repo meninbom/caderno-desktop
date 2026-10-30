@@ -1,0 +1,75 @@
+/* Seletor de cor do texto e marca-texto. Usa só tokens do tema (claro/escuro). Especificidade acima de
+ * `.editor-toolbar button` para os botões do popup não herdarem tamanho/hover da barra de formatação. */
+.text-color-picker { display: inline-flex; align-items: center; gap: 0; -webkit-app-region: no-drag; }
+.text-color-picker .tcp-menu { position: relative; display: inline-flex; }
+
+.text-color-picker .tcp-trigger { gap: 1px; min-width: 38px; padding: 0 4px; color: var(--text-muted); }
+.text-color-picker .tcp-trigger[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent); }
+.text-color-picker .tcp-icon { position: relative; display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 20px; }
+.text-color-picker .tcp-bar { position: absolute; left: 2px; right: 2px; bottom: 0; height: 3px; border-radius: 2px; background: var(--text); }
+.text-color-picker .tcp-bar.is-none, .text-color-picker .tcp-chip.is-none { background: transparent; box-shadow: inset 0 0 0 1px var(--text-faint); }
+.text-color-picker .tcp-bar.is-none { background: var(--text-faint); box-shadow: none; opacity: .55; }
+.text-color-picker .tcp-trigger[data-kind="highlight"] .tcp-bar.is-none { background: transparent; box-shadow: inset 0 0 0 1px var(--text-faint); opacity: 1; }
+.text-color-picker .tcp-caret { opacity: .7; }
+
+.text-color-picker .tcp-popover {
+  position: absolute; z-index: 40; left: 50%; transform: translateX(calc(-50% + var(--tcp-shift, 0px)));
+  box-sizing: border-box; width: var(--tcp-width, 304px); max-height: var(--tcp-max-height, 440px); overflow-x: hidden; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 10px; padding: 12px;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text);
+  box-shadow: var(--shadow-md); font-size: 12.5px; white-space: normal; text-align: left;
+}
+.text-color-picker .tcp-popover.above { bottom: calc(100% + 10px); }
+.text-color-picker .tcp-popover.below { top: calc(100% + 10px); }
+.text-color-picker .tcp-popover p { margin: 0; }
+
+.text-color-picker .tcp-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 10px; min-width: 0; }
+.text-color-picker .tcp-current { display: inline-flex; align-items: center; gap: 6px; min-width: 0; color: var(--text-muted); overflow-wrap: anywhere; }
+.text-color-picker .tcp-chip { flex: none; width: 14px; height: 14px; border-radius: 4px; box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 25%, transparent); }
+.text-color-picker .tcp-chip.is-none { background: transparent; }
+
+.text-color-picker .tcp-section { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.text-color-picker .tcp-label { color: var(--text-faint); font-size: 11px; font-weight: 600; letter-spacing: .02em; }
+.text-color-picker .tcp-hint, .text-color-picker .tcp-empty { color: var(--text-muted); font-size: 11.5px; }
+.text-color-picker .tcp-error { color: var(--danger); font-size: 11.5px; overflow-wrap: anywhere; }
+
+.text-color-picker .tcp-grid { display: grid; grid-template-columns: repeat(8, minmax(0, 1fr)); gap: 6px; padding: 3px; justify-items: center; }
+.text-color-picker .tcp-swatch {
+  position: relative; justify-content: center; box-sizing: border-box; width: 100%; max-width: 28px; min-width: 0; height: auto; aspect-ratio: 1; padding: 0;
+  border-radius: 6px; background: var(--swatch); color: var(--ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 24%, transparent); transition: transform .08s;
+}
+.text-color-picker .tcp-swatch:hover { background: var(--swatch); color: var(--ink); transform: scale(1.1); }
+.text-color-picker .tcp-swatch[aria-pressed="true"] { box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 24%, transparent), 0 0 0 2px var(--surface), 0 0 0 4px var(--accent); }
+.text-color-picker .tcp-swatch:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.text-color-picker .tcp-custom-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.text-color-picker .tcp-native { flex: none; box-sizing: border-box; width: 30px; height: 28px; padding: 2px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); cursor: pointer; }
+.text-color-picker .tcp-hex { flex: 1 1 0; min-width: 0; height: 28px; box-sizing: border-box; padding: 0 8px; font-family: var(--font-mono); font-size: 12px; letter-spacing: .04em; text-transform: uppercase; }
+.text-color-picker .tcp-hex::placeholder { text-transform: none; }
+.text-color-picker .tcp-hex:focus { border-color: var(--accent); outline: 2px solid var(--accent); outline-offset: 1px; }
+.text-color-picker .tcp-hex[aria-invalid="true"] { border-color: var(--danger); }
+.text-color-picker .tcp-preview {
+  flex: none; display: inline-flex; align-items: center; justify-content: center; width: 28px; height: 28px; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: 6px; font-weight: 700; background: var(--bg); color: var(--text);
+}
+
+.text-color-picker .tcp-action {
+  flex: none; justify-content: center; height: 28px; min-width: 0; padding: 0 10px; border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface-2); color: var(--text); font-size: 12px;
+}
+.text-color-picker .tcp-action:hover:not(:disabled) { background: var(--border-soft); color: var(--text); }
+.text-color-picker .tcp-action.primary { border-color: var(--accent); background: var(--accent); color: var(--accent-text); }
+.text-color-picker .tcp-action.primary:hover:not(:disabled) { background: var(--accent-hover); color: var(--accent-text); }
+.text-color-picker .tcp-reset { align-self: stretch; white-space: normal; }
+
+@media (prefers-reduced-motion: reduce) { .text-color-picker .tcp-swatch { transition: none; } .text-color-picker .tcp-swatch:hover { transform: none; } }
+@media (forced-colors: active) {
+  .text-color-picker .tcp-swatch, .text-color-picker .tcp-bar, .text-color-picker .tcp-chip, .text-color-picker .tcp-preview { forced-color-adjust: none; border: 1px solid CanvasText; }
+  .text-color-picker .tcp-swatch[aria-pressed="true"] { outline: 2px solid Highlight; outline-offset: 2px; }
+}
+@media (max-width: 1000px) { .text-color-picker .tcp-trigger { min-width: 32px; padding: 0 2px; } }
+
+/* A tinta de contraste está no HTML do marca-texto. Quando há uma cor de texto explícita,
+ * ela prevalece, herdada do span de textStyle. */
+.ProseMirror span[style*="color:"] > mark[data-color] { color: inherit !important; }

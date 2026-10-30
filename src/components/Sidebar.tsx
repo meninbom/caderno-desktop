@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from "react";
 import {
-  Book, Files, Star, Tag as TagIcon, Trash2, Plus, StickyNote,
-  SunMedium, MoonStar, ShieldCheck, Pencil, MoreHorizontal,
-  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, FolderPlus,
+  LayoutTemplate, Search, Book, Files, Star, Tag as TagIcon, Trash2, Plus,
+  SunMedium, MoonStar, Settings, PanelLeftClose, ShieldCheck, Pencil, MoreHorizontal,
+  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, FolderPlus, FolderInput, Check,
 } from "lucide-react";
 import { useAppStore, Selection } from "../state/store";
 import { useDismissablePopover } from "../hooks/useDismissablePopover";
 import { client } from "../api/client";
+import { TagManager } from "./TagManager";
 
 function Item({ icon, label, count, active, onClick }: {
   icon: React.ReactNode; label: string; count?: number; active: boolean; onClick: () => void;
@@ -20,13 +21,41 @@ function Item({ icon, label, count, active, onClick }: {
   );
 }
 
-export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBackup, onClipper, area, onArea }: {
+type Stack = Awaited<ReturnType<typeof client.listStacks>>[number];
+
+function StackMenu({ notebookName, stackId, stacks, onMove }: {
+  notebookName: string; stackId: string | null; stacks: Stack[]; onMove: (stackId: string | null) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const popover = useDismissablePopover(open, () => setOpen(false));
+  const choices = [{ id: null as string | null, name: "Sem pilha" }, ...stacks.map(s => ({ id: s.id as string | null, name: s.name }))];
+  return (
+    <span className="pop-anchor nb-stack-anchor" ref={popover.rootRef}>
+      <button ref={popover.triggerRef} className="icon" title="Mover para pilha" aria-label={`Pilha de ${notebookName}`} aria-haspopup="menu" aria-expanded={open} onClick={() => setOpen(v => !v)}><FolderInput size={12} /></button>
+      {open && (
+        <div className="stack-menu" role="menu" aria-label={`Mover ${notebookName} para pilha`}>
+          <div className="menu-label">Mover para pilha</div>
+          {choices.map(c => (
+            <button key={c.id ?? "none"} className="menu-row" role="menuitemradio" aria-checked={(stackId ?? null) === c.id} onClick={() => { setOpen(false); onMove(c.id); }}>
+              <span className="menu-check">{(stackId ?? null) === c.id && <Check size={12} strokeWidth={2.2} />}</span>
+              <span className="menu-text">{c.name}</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </span>
+  );
+}
+
+export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBackup, onClipper, area, onArea, onSettings, alerts, onCollapse, onCommand, onTemplates }: {
+  onCommand?:()=>void; onTemplates?:()=>void;
   onImportClick?: () => void;
   onImportEml?: () => void;
   onSaveBackup?: () => void;
   onRestoreBackup?: () => void;
   onClipper?:()=>void;
-  area?:'notes'|'tasks'|'calendar'; onArea?:(area:'notes'|'tasks'|'calendar')=>void;
+  area?:'notes'|'tasks'|'calendar'|'settings'; onArea?:(area:'notes'|'tasks'|'calendar'|'settings')=>void;
+  onSettings?:()=>void; alerts?:number; onCollapse?:()=>void;
 }) {
   const { state, dispatch, refreshMeta, refreshNotes, openNote } = useAppStore();
   const [creating, setCreating] = useState(false);
@@ -34,6 +63,7 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
   const [renamingId, setRenamingId] = useState<number | null>(null);
   const [renameValue, setRenameValue] = useState("");
   const [moreOpen, setMoreOpen] = useState(false);
+  const [tagManagerOpen, setTagManagerOpen] = useState(false);
   const [stacks, setStacks] = useState<Awaited<ReturnType<typeof client.listStacks>>>([]);
   const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
   const [stackDialog, setStackDialog] = useState<{ action: "create" | "rename" | "duplicate"; id?: string; value: string } | null>(null);
@@ -112,18 +142,22 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
 
   const renderNotebook = (nb: (typeof state.notebooks)[number]) => {
     const active = state.selection.kind === "notebook" && state.selection.notebookId === nb.id;
-    return <div key={`nb-${nb.id}`} className="notebook-stack-row" style={{ position: "relative" }}>
+    return <div key={`nb-${nb.id}`} className={`notebook-stack-row ${active ? "active" : ""}`}>
       {renamingId === nb.id ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenamingId(null); }} onBlur={() => void commitRename()} style={{ width: "100%", padding: "4px 8px", fontSize: 12.5 }} /> : <Item icon={<Book size={15} />} label={nb.name} count={nb.noteCount} active={active} onClick={() => select({ kind: "notebook", notebookId: nb.id })} />}
-      <select className="notebook-stack-select" aria-label={`Pilha de ${nb.name}`} title="Mover para pilha" value={nb.stackId ?? ""} onChange={async e => { await client.moveNotebookToStack(nb.id, e.target.value || null); await refreshMeta(); await refreshStacks(); }}><option value="">Sem pilha</option>{stacks.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}</select>
-      {active && <span style={{ position: "absolute", right: 24, top: 5, display: renamingId === nb.id ? "none" : "flex", gap: 2 }}><button className="icon" title="Renomear" style={{ padding: 3, color: "var(--text-faint)" }} onClick={() => startRename(nb.id, nb.name)}><Pencil size={12} /></button><button className="icon" title="Excluir caderno" style={{ padding: 3, color: "var(--text-faint)" }} onClick={() => void removeNotebook(nb.id)}><Trash2 size={12} /></button></span>}
+      {renamingId !== nb.id && <span className="nb-actions">
+        <StackMenu notebookName={nb.name} stackId={nb.stackId ?? null} stacks={stacks} onMove={async id => { await client.moveNotebookToStack(nb.id, id); await refreshMeta(); await refreshStacks(); }} />
+        <button className="icon" title="Renomear" aria-label={`Renomear ${nb.name}`} onClick={() => startRename(nb.id, nb.name)}><Pencil size={12} /></button>
+        <button className="icon" title="Excluir caderno" aria-label={`Excluir ${nb.name}`} onClick={() => void removeNotebook(nb.id)}><Trash2 size={12} /></button>
+      </span>}
     </div>;
   };
 
   return (
     <aside className="sidebar" aria-label="Navegação">
       <div className="brand">
-        <StickyNote size={16} strokeWidth={1.8} />
-        Caderno
+        <img className="brand-icon" src="./caderno.png" width={24} height={24} alt="" />
+        <span className="brand-name">Caderno</span>
+        {onCollapse && <button className="pane-collapse" title="Recolher barra lateral (Ctrl+\)" aria-label="Recolher barra lateral" onClick={onCollapse}><PanelLeftClose size={14} /></button>}
       </div>
 
       <button className="new-note" onClick={async () => {
@@ -140,6 +174,8 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
         <Plus size={14} strokeWidth={2.2} /> Nova nota
       </button>
 
+      <button className="sidebar-search template-entry" onClick={onTemplates} aria-label="Nova nota a partir de modelo"><LayoutTemplate size={14}/><span>Nova a partir de modelo</span></button>
+      <button className="sidebar-search" onClick={onCommand} aria-label="Pesquisar no Caderno"><Search size={14}/><span>Busca geral</span><kbd>Ctrl+K</kbd></button>
       <Item icon={<Files size={15} />} label="Notas" count={state.counts.all} active={state.selection.kind === "all"} onClick={() => select({ kind: "all" })} />
       <Item icon={<Files size={15} />} label="Tarefas" active={area==='tasks'} onClick={()=>onArea?.('tasks')} />
       <Item icon={<Book size={15} />} label="Calendário" active={area==='calendar'} onClick={()=>onArea?.('calendar')} />
@@ -183,8 +219,9 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
       </React.Fragment>)}
       {state.notebooks.filter(nb => !nb.stackId || !stacks.some(s => s.id === nb.stackId)).map((nb) => renderNotebook(nb))}
 
-      <div className="nav-section-label">Etiquetas</div>
+      <div className="nav-section-label tags-section-heading"><span>Etiquetas</span><button aria-label="Gerenciar etiquetas" title="Gerenciar etiquetas" onClick={() => setTagManagerOpen(true)}><Settings size={13}/></button></div>
       {state.tags.length === 0 && <span style={{ padding: "2px 10px", color: "var(--text-faint)", fontSize: 12 }}>Nenhuma etiqueta</span>}
+      <div className="sidebar-tag-list" role="group" aria-label="Etiquetas">
       {state.tags.map((t) => (
         <Item
           key={`tag-${t.id}`}
@@ -195,7 +232,9 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
           onClick={() => select({ kind: "tag", tagId: t.id })}
         />
       ))}
+      </div>
 
+      {tagManagerOpen && <TagManager onClose={() => setTagManagerOpen(false)}/>}
       <div className="sidebar-footer">
         <span className="pop-anchor" ref={morePopover.rootRef}>
           <button ref={morePopover.triggerRef} title="Mais ações" aria-label="Mais ações" aria-expanded={moreOpen} onClick={() => setMoreOpen((v) => !v)}>
@@ -227,6 +266,9 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
           <ShieldCheck size={13} />
         </span>
         <span style={{ flex: 1 }} />
+        {onSettings && <button className="settings-btn" title="Configurações" aria-label="Configurações" aria-pressed={area === "settings"} onClick={onSettings}>
+          <Settings size={14} />{!!alerts && <em className="alert-dot" aria-label={`${alerts} aviso(s)`} />}
+        </button>}
         <button
           title="Alternar tema"
           aria-label="Alternar tema"

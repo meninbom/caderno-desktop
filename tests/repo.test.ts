@@ -30,6 +30,48 @@ function fresh(): {
   return { db, notes, notebooks, tags, counts, meta, attachments, backup };
 }
 
+describe("Gestão de etiquetas", () => {
+  it("renomeia a mesma etiqueta em todas as notas e evita duplicatas por caixa ou espaços", () => {
+    const x = fresh();
+    try {
+      const first = x.notes.create({ title: "Uma nota", contentHtml: "<p>Conteúdo intacto</p>" });
+      const second = x.notes.create({ title: "Outra nota", contentHtml: "<p>Outro conteúdo</p>" });
+      const tag = x.tags.create("  Ação   comercial  ")!;
+      expect(tag.name).toBe("Ação comercial");
+      expect(x.tags.create("AÇÃO COMERCIAL")).toBeNull();
+      x.tags.attach(first.id, tag.id); x.tags.attach(second.id, tag.id);
+      expect(x.tags.rename(tag.id, "  Prioridade  ")).toMatchObject({ id: tag.id, name: "Prioridade", noteCount: 2 });
+      expect(x.notes.get(first.id)?.tags).toEqual([{ id: tag.id, name: "Prioridade" }]);
+      expect(x.notes.get(second.id)?.tags).toEqual([{ id: tag.id, name: "Prioridade" }]);
+      expect(x.notes.get(first.id)?.contentHtml).toBe("<p>Conteúdo intacto</p>");
+      const other = x.tags.create("Outra")!;
+      expect(x.tags.rename(tag.id, " OUTRA ")).toBeNull();
+      expect(x.tags.list().find(t => t.id === tag.id)?.name).toBe("Prioridade");
+      expect(x.tags.list().find(t => t.id === other.id)?.name).toBe("Outra");
+      expect(() => x.tags.rename(tag.id, " ")).toThrow(/entre 1 e 80/);
+    } finally { x.db.close(); }
+  });
+
+  it("exclui apenas a etiqueta e seus vínculos, mantendo notas ativas e na lixeira", () => {
+    const x = fresh();
+    try {
+      const first = x.notes.create({ title: "Manter ativa", contentHtml: "<p>Preservado</p>" });
+      const second = x.notes.create({ title: "Manter na lixeira", contentHtml: "<p>Também preservado</p>" });
+      const tag = x.tags.create("Excluir vínculo")!, keep = x.tags.create("Manter etiqueta")!;
+      x.tags.attach(first.id, tag.id); x.tags.attach(second.id, tag.id); x.tags.attach(first.id, keep.id);
+      x.notes.softDelete(second.id);
+      expect(x.tags.list().find(t => t.id === tag.id)?.noteCount).toBe(1);
+      expect(x.tags.remove(tag.id)).toBe(true);
+      expect(x.tags.remove(tag.id)).toBe(false);
+      expect(x.notes.get(first.id)?.tags).toEqual([{ id: keep.id, name: keep.name }]);
+      expect(x.notes.get(second.id)?.tags).toEqual([]);
+      expect(x.notes.get(second.id)?.contentHtml).toBe("<p>Também preservado</p>");
+      expect(x.notes.get(second.id)?.deletedAt).not.toBeNull();
+      expect(x.db.pragma("foreign_key_check")).toEqual([]);
+    } finally { x.db.close(); }
+  });
+});
+
 describe("NotesRepo", () => {
   let r: ReturnType<typeof fresh>;
   beforeAll(() => { r = fresh(); });
@@ -73,6 +115,21 @@ describe("NotesRepo", () => {
     expect(() => r.notes.list({ view: "all", query: "x' OR 1=1 --" })).not.toThrow();
   });
 
+  it("busca incrementalmente por prefixos sem distinção de caixa ou acento e prioriza título", () => {
+    const titleHit = r.notes.create({ title: "Crie cadernos agora", contentHtml: "<p>ajuda</p>" });
+    const bodyHit = r.notes.create({ title: "Outra nota", contentHtml: "<p>crie cadernos nesta etapa</p>" });
+    const unrelated = r.notes.create({ title: "Nota sem relação", contentHtml: "<p>apenas texto</p>" });
+    expect(r.notes.list({ view: "all", query: "Crie cadern" }).map(note => note.id)).toEqual(expect.arrayContaining([titleHit.id, bodyHit.id]));
+    expect(r.notes.list({ view: "all", query: "CRIE CADERN" }).map(note => note.id)).toEqual(expect.arrayContaining([titleHit.id, bodyHit.id]));
+    const accented = r.notes.create({ title: "Café", contentHtml: "" });
+    expect(r.notes.list({ view: "all", query: "cafe" }).map(note => note.id)).toContain(accented.id);
+    expect(r.notes.search("Crie cadern", 10)[0]?.id).toBe(titleHit.id);
+    expect(r.notes.find("Crie cadern", 10).map(note => note.id)).toContain(titleHit.id);
+    expect(r.notes.search("Crie cadern", 10).map(note => note.id)).not.toContain(unrelated.id);
+    expect(r.notes.list({ view: "all", query: "type:note" }).map(note => note.id)).toContain(titleHit.id);
+    expect(r.notes.search("!!!", 10)).toEqual([]);
+  });
+
   it("indexa anexos via jobs deduplicados e mantém retry, cancel, restart e FTS coerentes",()=>{
     const jobs=new AttachmentJobsRepo(r.db), note=r.notes.create({title:"Anexo"});
     const attachment=r.attachments.save(note.id,"fixture-etapa3.txt",Buffer.from("conteudo exclusivo cobalt attachment"));
@@ -81,12 +138,25 @@ describe("NotesRepo", () => {
     jobs.complete(queue[0].id,attachment.id,note.id,"fixture-etapa3.txt","conteudo exclusivo cobalt attachment");
     expect(r.notes.list({view:"all",query:"cobalt"}).find(x=>x.id===note.id)?.matchSource).toBe("fixture-etapa3.txt");
     expect(r.notes.list({view:"all",query:"type:attachment cobalt"}).map(x=>x.id)).toContain(note.id);
+    expect(r.notes.list({view:"all",query:"type:attachment"}).map(x=>x.id)).toContain(note.id);
     expect(r.notes.list({view:"all",query:"type:attachment absenttoken"}).map(x=>x.id)).not.toContain(note.id);
     expect(jobs.retry(queue[0].id)).toBe(true);expect(jobs.list().find(x=>x.id===queue[0].id)?.status).toBe("queued");
     jobs.next();expect(jobs.cancel(queue[0].id)).toBe(true);expect(jobs.list().find(x=>x.id===queue[0].id)?.status).toBe("cancel_requested");
     jobs.recover();expect(jobs.list().find(x=>x.id===queue[0].id)?.status).toBe("queued");
     jobs.next();expect(jobs.list().find(x=>x.id===queue[0].id)?.attempts).toBe(3);
     r.attachments.remove(note.id,attachment.id);expect(jobs.list().some(x=>x.id===queue[0].id)).toBe(false);expect(r.notes.list({view:"all",query:"cobalt"}).map(x=>x.id)).not.toContain(note.id);
+  });
+
+  it("preserva origem e snippet de anexo quando a mesma busca também bate no corpo",()=>{
+    const jobs=new AttachmentJobsRepo(r.db),note=r.notes.create({title:"Nota de concordância",contentHtml:"<p>termo cobalt exclusivo no corpo</p>"});
+    const attachment=r.attachments.save(note.id,"origem-cobalt.txt",Buffer.from("termo cobalt exclusivo no documento"));
+    const job=jobs.list().find(x=>x.attachmentId===attachment.id)!;
+    jobs.complete(job.id,attachment.id,note.id,attachment.fileName,"termo cobalt exclusivo no documento");
+    for(const result of [r.notes.list({view:"all",query:"termo cobalt exclusivo"}).find(x=>x.id===note.id),r.notes.search("termo cobalt exclusivo",10).find(x=>x.id===note.id)]) {
+      expect(result?.matchSource).toBe("origem-cobalt.txt");
+      expect(result?.matchSourceKind).toBe("attachment");
+      expect(result?.matchSnippet).toContain("documento");
+    }
   });
 
   it("mede FTS com 1000 notas e 20 anexos e registra p50/p95 com hardware local",()=>{
@@ -275,7 +345,7 @@ describe("BackupRepo", () => {
     sourceNotes.update(note.id,{contentHtml:`<img src="caderno-asset://${image.storedName}" data-asset-id="${image.storedName}" alt="pixel">`});
     const sourceTasks=new TasksRepo(sourceDb),sourceEvents=new EventsRepo(sourceDb),taskId=sourceTasks.create({noteId:note.id,title:'Backup task',dueAt:100,reminderAt:null}),eventId=sourceEvents.create({noteId:note.id,title:'Backup event',description:'',startAt:100,endAt:200,timeZone:'UTC',allDay:false});
     sourceNotes.recordClipSource(note.id,"https://example.test/article","Article");
-    const backup=new BackupRepo(sourceDb,sourceDir).dump();expect(backup.schemaVersion).toBe(6);expect(backup.attachments).toHaveLength(1);expect(backup.clipperSources).toHaveLength(1);
+    const backup=new BackupRepo(sourceDb,sourceDir).dump();expect(backup.schemaVersion).toBe(8);expect(backup.attachments).toHaveLength(1);expect(backup.clipperSources).toHaveLength(1);
     expect(backup.tasks).toHaveLength(1);expect(backup.events).toHaveLength(1);
     const targetDb=openDatabase({database:path.join(root,"dest.sqlite"),attachments:destDir}),targetBackup=new BackupRepo(targetDb,destDir);
     const corrupt=structuredClone(backup);corrupt.attachments![0].sha256="0".repeat(64);

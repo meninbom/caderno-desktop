@@ -14,6 +14,11 @@ describe("search query parser", () => {
     expect(() => parseSearchQuery("tag:")).toThrow(/informe um valor/);
   });
   it("turns input into literal FTS syntax and handles diacritics", () => {
-    expect(toFtsExpression('ação " OR * :')).toBe('"ação" AND "OR"');
+    expect(toFtsExpression('ação " OR * :')).toBe('"ação" AND "OR"*');
+  });
+  it("uses exact earlier words and a prefix for the last literal word", () => {
+    expect(toFtsExpression("Crie cadern")).toBe('"Crie" AND "cadern"*');
+    expect(toFtsExpression('OR "* (NEAR)')).toBe('"OR" AND "NEAR"*');
+    expect(toFtsExpression("  !!! ")).toBe("");
   });
 });

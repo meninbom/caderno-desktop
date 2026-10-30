@@ -45,8 +45,13 @@ export function parseSearchQuery(input: string): SearchQuery {
   return result;
 }
 
+export function tokenizeSearchText(text: string): string[] {
+  return text.normalize("NFC").match(/[\p{L}\p{N}_]+/gu) ?? [];
+}
+
 export function toFtsExpression(text: string): string {
-  // Treat user text as literal tokens, never as raw FTS5 syntax.
-  const tokens = text.normalize("NFC").match(/[\p{L}\p{N}_]+/gu) ?? [];
-  return tokens.map(t => `"${t.replace(/"/g, '""')}"`).join(" AND ");
+  // Quote every token so user input can never become FTS5 syntax. A trailing
+  // wildcard makes the current word searchable while it is still being typed.
+  const tokens = tokenizeSearchText(text);
+  return tokens.map((token, index) => `"${token.replace(/"/g, '""')}"${index === tokens.length - 1 ? "*" : ""}`).join(" AND ");
 }

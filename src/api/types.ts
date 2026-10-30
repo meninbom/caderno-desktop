@@ -1,3 +1,4 @@
+import type { ChannelInputs, PdfAnnotation, NoteTemplateMeta, NoteTemplateFull, TemplateSaveResult, ExportBeginReady, ExportFinishResult } from '../../shared/ipc';
 import type {
   ListNotesQuery,
   NoteFull,
@@ -29,10 +30,15 @@ export type BackupRestoreResult =
  * mantendo a persistência desktop (SQLite) isolada do preview de navegador.
  */
 export interface CadernoClient {
-  listTasks(filter:'today'|'upcoming'|'overdue'|'completed'|'all'):Promise<Task[]>; createTask(x:{noteId:string;title:string;dueAt:number|null;reminderAt:number|null}):Promise<string>; updateTask(x:{id:string;noteId?:string;title?:string;dueAt?:number|null;reminderAt?:number|null;done?:boolean}):Promise<boolean>; deleteTask(id:string):Promise<boolean>;
+  listTasks(filter:'today'|'upcoming'|'overdue'|'completed'|'all',priority?:'all'|'low'|'normal'|'high'):Promise<Task[]>; createTask(x:ChannelInputs['tasks:create']):Promise<string>; updateTask(x:ChannelInputs['tasks:update']):Promise<boolean>; deleteTask(id:string):Promise<boolean>;
   listEvents(startAt:number,endAt:number):Promise<CalendarEvent[]>; createEvent(x:{noteId:string|null;title:string;description:string;startAt:number;endAt:number;timeZone:string;allDay:boolean}):Promise<string>; updateEvent(x:{id:string;noteId?:string|null;title?:string;description?:string;startAt?:number;endAt?:number;timeZone?:string;allDay?:boolean}):Promise<boolean>; deleteEvent(id:string):Promise<boolean>;
   listNotes(input: ListNotesQuery): Promise<NoteMeta[]>;
   getNote(id: string): Promise<NoteFull | null>;
+  searchNotes(query:string,limit?:number):Promise<NoteMeta[]>;
+  backlinks(id:string):Promise<NoteLinkTarget[]>;
+  listPdfAnnotations(storedName:string,page:number):Promise<PdfAnnotation[]>;
+  savePdfAnnotation(x:ChannelInputs['pdf:save']):Promise<string>;
+  deletePdfAnnotation(id:string):Promise<boolean>;
   findNotes(query: string, limit?: number): Promise<NoteLinkTarget[]>;
   createNote(input: { notebookId?: number | null; title?: string; contentHtml?: string }): Promise<NoteFull>;
   updateNote(id: string, patch: { title?: string; contentHtml?: string }): Promise<NoteFull | null>;
@@ -54,6 +60,8 @@ export interface CadernoClient {
   deleteStack(id: string): Promise<boolean>;
   listTags(): Promise<Tag[]>;
   createTag(name: string): Promise<Tag | null>;
+  renameTag(id: number, name: string): Promise<Tag | null>;
+  deleteTag(id: number): Promise<boolean>;
   attachTag(noteId: string, tagId: number): Promise<boolean>;
   detachTag(noteId: string, tagId: number): Promise<boolean>;
   counts(): Promise<SidebarCounts>;
@@ -76,4 +84,14 @@ export interface CadernoClient {
   enableClipper():Promise<{port:number}>;
   pairClipper():Promise<{code:string;nonce:string;expiresAt:number}>;
   revokeClipper():Promise<boolean>;
+  listTemplates(query?:string):Promise<NoteTemplateMeta[]>;
+  getTemplate(id:string):Promise<NoteTemplateFull|null>;
+  createTemplateFromNote(x:{noteId:string;name:string;description?:string;noteTitle?:string}):Promise<TemplateSaveResult>;
+  updateTemplate(x:{id:string;name?:string;description?:string;noteTitle?:string}):Promise<NoteTemplateMeta|null>;
+  deleteTemplate(id:string):Promise<boolean>;
+  applyTemplate(id:string,notebookId?:number|null):Promise<NoteFull|null>;
+  restoreBuiltinTemplates():Promise<number>;
+  exportBegin(noteId:string,format:'pdf'|'html'):Promise<{canceled:true}|ExportBeginReady>;
+  exportFinish(x:ChannelInputs['export:finish']):Promise<ExportFinishResult>;
+  exportAbort(token:string):Promise<boolean>;
 }
