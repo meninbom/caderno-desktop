@@ -66,6 +66,10 @@
 
   --sidebar-w: 224px;
   --list-w: 280px;
+  --float-inset: 12px;
+  --float-gap: 12px;
+  --float-top: 46px;
+  --float-radius: 18px;
 }
 
 [data-theme="dark"] {
@@ -139,32 +143,68 @@ input::placeholder, textarea::placeholder { color: var(--text-faint); }
 input:focus { border-color: var(--accent); outline: none; }
 
 /* =========================================================================
- * Layout — 3 painéis
+ * Layout — canvas com barra e lista flutuantes
+ * Esquerda: navegação. Centro: nota, agenda ou configurações.
+ * Direita: lista de notas (só na área de notas).
  * ========================================================================= */
 .app {
+  --sidebar-track: min(var(--sidebar-w), 34vw);
+  --list-track: 0px;
+  --side-gap: var(--float-gap);
+  --list-gap: 0px;
   display: grid;
-  grid-template-columns: var(--sidebar-w) var(--list-w) 1fr;
+  grid-template-columns: calc(var(--sidebar-track) + var(--side-gap)) minmax(0, 1fr) calc(var(--list-track) + var(--list-gap));
   grid-template-rows: minmax(0, 1fr);
   height: 100%;
+  padding: var(--float-top) var(--float-inset) var(--float-inset);
+  background: var(--bg);
+  overflow: hidden;
+}
+.app:has(.notelist) {
+  --list-track: min(var(--list-w), 36vw);
+  --list-gap: var(--float-gap);
 }
 .app.narrow {
   --sidebar-w: 200px;
   --list-w: 240px;
 }
-.agenda{grid-column:2/4;min-width:0;min-height:0;overflow:auto;padding:26px 32px;color:var(--text);background:var(--bg);display:flex;flex-direction:column;gap:16px}.agenda>header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding-bottom:14px}.agenda h1{font-size:20px;margin:0}.agenda h2{font-size:16px;margin:0;text-transform:capitalize}.agenda p,.agenda small{color:var(--text-muted);font-size:12px}.agenda-actions,.agenda-filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.agenda-filters button{color:var(--text-muted);padding:6px 9px;border-radius:6px}.agenda-filters button.active{background:var(--accent-soft);color:var(--accent)}.agenda-list{overflow:auto;display:flex;flex-direction:column;border-top:1px solid var(--border)}.agenda-list article{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-soft);min-width:0}.agenda-item{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}.agenda-item strong{overflow:hidden;text-overflow:ellipsis}.agenda-item small{overflow-wrap:anywhere}.agenda-error{color:var(--danger)}
+body::before {
+  content: "";
+  position: fixed;
+  z-index: 25;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--float-top);
+  -webkit-app-region: drag;
+}
+.agenda{grid-column:2;grid-row:1;min-width:0;min-height:0;overflow:auto;padding:26px 32px;color:var(--text);background:var(--bg);display:flex;flex-direction:column;gap:16px}.agenda>header{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:1px solid var(--border);padding-bottom:14px}.agenda h1{font-size:20px;margin:0}.agenda h2{font-size:16px;margin:0;text-transform:capitalize}.agenda p,.agenda small{color:var(--text-muted);font-size:12px}.agenda-actions,.agenda-filters{display:flex;align-items:center;gap:6px;flex-wrap:wrap}.agenda-filters button{color:var(--text-muted);padding:6px 9px;border-radius:6px}.agenda-filters button.active{background:var(--accent-soft);color:var(--accent)}.agenda-list{overflow:auto;display:flex;flex-direction:column;border-top:1px solid var(--border)}.agenda-list article{display:flex;align-items:center;gap:10px;padding:10px 4px;border-bottom:1px solid var(--border-soft);min-width:0}.agenda-item{display:flex;flex-direction:column;gap:4px;flex:1;min-width:0}.agenda-item strong{overflow:hidden;text-overflow:ellipsis}.agenda-item small{overflow-wrap:anywhere}.agenda-error{color:var(--danger)}
 
 /* =========================================================================
  * Sidebar
  * ========================================================================= */
 .sidebar {
+  grid-column: 1;
+  grid-row: 1;
+  justify-self: start;
+  width: var(--sidebar-track);
+  min-width: 0;
+  min-height: 0;
+  margin-right: var(--side-gap);
   background: var(--bg-soft);
-  border-right: 1px solid var(--border);
+  border: 1px solid color-mix(in srgb, var(--text) 16%, var(--border));
+  border-radius: var(--float-radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.08);
   display: flex;
   flex-direction: column;
   padding: 12px 8px 8px;
   gap: 1px;
   overflow-y: auto;
   overflow-x: hidden;
+}
+[data-theme="dark"] .sidebar,
+[data-theme="dark"] .notelist {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
 }
 .brand {
   display: flex;
@@ -424,11 +464,20 @@ input:focus { border-color: var(--accent); outline: none; }
  * Lista de notas
  * ========================================================================= */
 .notelist {
-  border-right: 1px solid var(--border);
+  grid-column: 3;
+  grid-row: 1;
+  justify-self: end;
+  width: var(--list-track);
+  min-width: 0;
+  min-height: 0;
+  margin-left: var(--list-gap);
   display: flex;
   flex-direction: column;
-  min-width: 0;
   background: var(--surface);
+  border: 1px solid color-mix(in srgb, var(--text) 16%, var(--border));
+  border-radius: var(--float-radius);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.08);
+  overflow: hidden;
 }
 .notelist-header {
   padding: 12px 12px 10px;
@@ -618,8 +667,8 @@ input:focus { border-color: var(--accent); outline: none; }
 /* =========================================================================
  * Editor
  * ========================================================================= */
-.editor-pane { display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
-.editor-topbar { flex: 0 0 38px; display: flex; align-items: center; justify-content: flex-end; padding: 0 148px 0 12px; -webkit-app-region: drag; }
+.editor-pane { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
+.editor-topbar { flex: 0 0 38px; display: flex; align-items: center; justify-content: flex-end; padding: 0 12px; -webkit-app-region: drag; }
 .writing-layout { position: relative; -webkit-app-region: no-drag; z-index: 35; }
 .writing-layout > button { height: 28px; padding: 0 8px; gap: 6px; color: var(--text-muted); font-size: 12px; border-radius: 6px; }
 .writing-layout > button:hover, .writing-layout > button[aria-expanded=true] { background: var(--surface-2); color: var(--text); }
@@ -956,6 +1005,14 @@ button.icon { padding: 4px 6px; }
   gap: 10px;
   align-items: center;
 }
+.app-toast {
+  position: fixed;
+  z-index: 100;
+  top: calc(var(--float-top) + 8px);
+  left: calc(var(--float-inset) + var(--sidebar-track, 0px) + var(--side-gap, 0px) + 12px);
+  right: calc(var(--float-inset) + var(--list-track, 0px) + var(--list-gap, 0px) + 12px);
+}
+.app-toast-info { background: var(--accent-soft); color: var(--accent); border-bottom-color: transparent; }
 
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 8px; border: 2px solid transparent; background-clip: content-box; }
@@ -978,8 +1035,8 @@ button.icon { padding: 4px 6px; }
  * ========================================================================= */
 .settings-btn { position: relative; }
 .alert-dot { position: absolute; top: 3px; right: 3px; width: 7px; height: 7px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px var(--bg-soft); }
-.settings { grid-column: 2 / 4; min-width: 0; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); background: var(--bg); color: var(--text); }
-.settings-nav { padding: 44px 10px 16px; border-right: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; overflow-y: auto; -webkit-app-region: drag; }
+.settings { grid-column: 2; grid-row: 1; min-width: 0; min-height: 0; display: grid; grid-template-columns: 210px minmax(0, 1fr); background: var(--bg); color: var(--text); }
+.settings-nav { padding: 16px 10px; border-right: 1px solid var(--border-soft); display: flex; flex-direction: column; gap: 2px; overflow-y: auto; -webkit-app-region: drag; }
 .settings-nav button { -webkit-app-region: no-drag; }
 .settings-nav h1 { font-size: 18px; margin: 0 8px 14px; font-weight: 650; }
 .settings-nav button { display: flex; align-items: center; gap: 9px; padding: 7px 9px; color: var(--text-muted); text-align: left; }
@@ -987,7 +1044,7 @@ button.icon { padding: 4px 6px; }
 .settings-nav button:hover { background: var(--surface-2); color: var(--text); }
 .settings-nav button.active { background: var(--accent-soft); color: var(--accent); }
 .badge { font-style: normal; font-size: 10.5px; min-width: 17px; height: 17px; padding: 0 5px; border-radius: 9px; background: var(--danger); color: #fff; display: inline-flex; align-items: center; justify-content: center; }
-.settings-body { overflow-y: auto; padding: 44px clamp(24px, 5vw, 64px) 80px; display: flex; flex-direction: column; gap: 4px; align-items: stretch; max-width: 820px; width: 100%; }
+.settings-body { overflow-y: auto; padding: 16px clamp(24px, 5vw, 64px) 80px; display: flex; flex-direction: column; gap: 4px; align-items: stretch; max-width: 820px; width: 100%; }
 .settings-body h2 { font-size: 20px; font-weight: 650; margin: 0 0 8px; }
 .set-note { margin: 0 0 12px; color: var(--text-muted); font-size: 13px; }
 .set-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 14px 0; border-bottom: 1px solid var(--border-soft); }
@@ -1025,7 +1082,7 @@ button.icon { padding: 4px 6px; }
 .log-entry:first-child { border-top: 0; }
 .log-entry time { color: var(--text-faint); font-variant-numeric: tabular-nums; flex-shrink: 0; }
 .log-entry.error { color: var(--danger); background: var(--danger-soft); }
-@media (max-width: 1000px) { .settings { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .settings-nav { flex-direction: row; flex-wrap: wrap; padding: 38px 10px 8px; border-right: 0; border-bottom: 1px solid var(--border-soft); } .settings-nav h1 { flex-basis: 100%; margin-bottom: 4px; } .set-row { flex-direction: column; align-items: flex-start; gap: 8px; } .set-control input[type=range] { width: 160px; } }
+@media (max-width: 1000px) { .settings { grid-template-columns: 1fr; grid-template-rows: auto 1fr; } .settings-nav { flex-direction: row; flex-wrap: wrap; padding: 12px 10px 8px; border-right: 0; border-bottom: 1px solid var(--border-soft); } .settings-nav h1 { flex-basis: 100%; margin-bottom: 4px; } .set-row { flex-direction: column; align-items: flex-start; gap: 8px; } .set-control input[type=range] { width: 160px; } }
 .settings .attachment-jobs > strong { font-size: 12.5px; color: var(--text); }
 
 .filter-panel input[type="date"] { min-width: 0; padding-right: 4px; }
@@ -1052,9 +1109,10 @@ button.icon { padding: 4px 6px; }
 
 /* Barras recolhíveis */
 .app { transition: grid-template-columns .18s ease; }
-html[data-sidebar-collapsed] .app { --sidebar-w: 0px; }
-html[data-list-collapsed] .app { --list-w: 0px; }
-html[data-sidebar-collapsed] .sidebar, html[data-list-collapsed] .notelist { visibility: hidden; overflow: hidden; border-width: 0; padding-inline: 0; }
+.sidebar, .notelist { transition: width .18s ease, margin .18s ease, box-shadow .18s ease; }
+html[data-sidebar-collapsed] .app { --sidebar-w: 0px; --side-gap: 0px; }
+html[data-list-collapsed] .app { --list-w: 0px; --list-gap: 0px; }
+html[data-sidebar-collapsed] .sidebar, html[data-list-collapsed] .notelist { visibility: hidden; overflow: hidden; border-width: 0; padding: 0; box-shadow: none; pointer-events: none; }
 .brand { position: relative; }
 .brand .brand-name { flex: 1; }
 .pane-collapse { -webkit-app-region: no-drag; width: 24px; height: 24px; padding: 0; justify-content: center; color: var(--text-faint); border-radius: 6px; flex-shrink: 0; }
@@ -1062,9 +1120,8 @@ html[data-sidebar-collapsed] .sidebar, html[data-list-collapsed] .notelist { vis
 .notelist-header .title { display: flex; align-items: center; gap: 6px; }
 .notelist-header .notelist-title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notelist-header .title .pane-collapse { margin-left: 2px; }
-html[data-sidebar-collapsed] .notelist-header .title { padding-left: 30px; min-height: 24px; }
-.pane-rail { position: fixed; z-index: 40; top: 7px; left: 8px; display: flex; gap: 4px; -webkit-app-region: no-drag; }
-html:not([data-sidebar-collapsed]) .pane-rail { left: calc(var(--sidebar-w) + 8px); }
+.pane-rail { position: fixed; z-index: 40; top: 9px; left: var(--float-inset); display: flex; gap: 4px; -webkit-app-region: no-drag; }
+html:not([data-sidebar-collapsed]) .pane-rail { left: calc(var(--float-inset) + var(--sidebar-track) + var(--side-gap) + 6px); }
 .pane-rail button { height: 26px; min-width: 26px; padding: 0 6px; gap: 5px; justify-content: center; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: var(--shadow-sm); font-size: 11.5px; }
 .pane-rail button:hover { color: var(--text); background: var(--surface-2); }
 .task-dialog > .row .primary { background: var(--accent); color: var(--accent-text); font-weight: 500; }
@@ -1190,8 +1247,14 @@ html:not([data-sidebar-collapsed]) .pane-rail { left: calc(var(--sidebar-w) + 8p
 .task-repeat { color:var(--accent); background:var(--accent-soft); }
 .dlg-help { color:var(--text-muted); font-size:11.5px; line-height:1.5; }
 .agenda-filters select { margin-left:auto; max-width:200px; font-size:12px; }
-html[data-sidebar-collapsed] .notelist-header .title { padding-left:60px; }
-html[data-sidebar-collapsed] .agenda>header { padding-top:26px; }
+@media (max-width: 720px) {
+  :root { --float-inset: 8px; --float-gap: 8px; }
+  .app { --sidebar-track: min(var(--sidebar-w), 38vw); }
+  .app:has(.notelist) { --list-track: min(var(--list-w), 42vw); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .app, .sidebar, .notelist { transition: none; }
+}
 .media-preview-body.pdf-preview-body { position:relative; display:block; padding:0; }
 .pdf-preview-body>.media-loading { position:absolute; top:20px; left:20px; }
 .pdf-workspace { display:grid; grid-template-columns:minmax(0,1fr) 240px; height:100%; min-height:0; }

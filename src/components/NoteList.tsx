@@ -1,5 +1,5 @@
 import React, { useMemo, useEffect, useRef, useState } from "react";
-import { Star, Pin, StickyNote, Search, SlidersHorizontal, ChevronDown, X, PanelLeftClose } from "lucide-react";
+import { Star, Pin, StickyNote, Search, SlidersHorizontal, ChevronDown, X, PanelRightClose } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { client } from "../api/client";
 import { beginSidebarDrag, endSidebarDrag } from "./sidebarDrag";
@@ -95,7 +95,7 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
         <div className="title">
           <span className="notelist-title-text">{headerTitle}</span>
           <span className="count">{state.notes.length}</span>
-          {onCollapse && <button className="pane-collapse" title="Recolher lista de notas (Ctrl+Alt+\)" aria-label="Recolher lista de notas" onClick={onCollapse}><PanelLeftClose size={14} /></button>}
+          {onCollapse && <button className="pane-collapse" title="Recolher lista de notas (Ctrl+Alt+\)" aria-label="Recolher lista de notas" onClick={onCollapse}><PanelRightClose size={14} /></button>}
         </div>
         {selectionKey !== "trash" ? (
           <div className="notelist-actions">

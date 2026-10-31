@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { X, Search, PanelLeftOpen } from "lucide-react";
+import { X, Search, PanelLeftOpen, PanelRightOpen } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { NoteList } from "./components/NoteList";
 import { NoteEditor } from "./components/NoteEditor";
@@ -159,17 +159,17 @@ export function App() {
         <div className="pane-rail">
           {appearance.sidebarCollapsed&&<button aria-label="Pesquisar no Caderno" title="Pesquisar no Caderno (Ctrl+K)" onClick={()=>void openPalette()}><Search size={15}/></button>}
           {appearance.sidebarCollapsed && <button title="Expandir barra lateral (Ctrl+\)" aria-label="Expandir barra lateral" onClick={() => update({ sidebarCollapsed: false })}><PanelLeftOpen size={15} /></button>}
-          {appearance.listCollapsed && area === "notes" && <button title="Expandir lista de notas (Ctrl+Alt+\)" aria-label="Expandir lista de notas" onClick={() => update({ listCollapsed: false })}><PanelLeftOpen size={15} /><span>Notas</span></button>}
+          {appearance.listCollapsed && area === "notes" && <button title="Expandir lista de notas (Ctrl+Alt+\)" aria-label="Expandir lista de notas" onClick={() => update({ listCollapsed: false })}><PanelRightOpen size={15} /><span>Notas</span></button>}
         </div>
       )}
       {state.error && (
-        <div className="error-bar" role="alert" style={{ position: "fixed", top: 0, left: 216, right: 150, zIndex: 100 }}>
+        <div className="error-bar app-toast" role="alert">
           <span>{state.error}</span>
           <button className="ghost" onClick={() => dispatch({ type: "error", message: null })}><X size={13} /></button>
         </div>
       )}
       {toast && (
-        <div className="error-bar" style={{ position: "fixed", top: 0, left: 216, right: 150, zIndex: 100, background: "var(--accent-soft)", color: "var(--accent)" }}>
+        <div className="error-bar app-toast app-toast-info">
           <span>{toast}</span>
           <button className="ghost" onClick={() => setToast(null)}><X size={13} /></button>
         </div>
