@@ -1,0 +1,131 @@
+/* Personalização de cadernos: selo, filtro da barra lateral e diálogo.
+ * Só usa tokens do tema; a cor escolhida pelo usuário entra via --nb-accent / --nb-ink. */
+
+/* ------------------------------------------------------------------ selo */
+.nb-badge {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  background: var(--nb-accent);
+  color: var(--nb-ink);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--text) 22%, transparent);
+  overflow: visible;
+}
+/* Vence as regras de cor de svg da árvore (.tree-row > [data-menu-item] svg). */
+.nb-badge svg,
+.sidebar .tree-row > [data-menu-item] .nb-badge svg,
+.sidebar .tree-row.active > [data-menu-item] .nb-badge svg,
+.sidebar .tree-row:hover > [data-menu-item] .nb-badge svg {
+  color: var(--nb-ink);
+  stroke: var(--nb-ink);
+}
+.nb-emoji {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  font-family: "Segoe UI Emoji", "Apple Color Emoji", "Noto Color Emoji", sans-serif;
+  font-style: normal;
+  user-select: none;
+}
+.notebook-row.has-accent.active { box-shadow: var(--shadow-sm), inset 2px 0 0 var(--nb-accent); }
+.notebook-block.drop-target > .notebook-row.has-accent { box-shadow: inset 2px 0 0 var(--text-muted); }
+
+/* ---------------------------------------------------- filtro da barra lateral */
+.nb-filter { display: flex; flex-direction: column; gap: 6px; padding: 2px 4px 6px; }
+.nb-filter-field { position: relative; display: flex; align-items: center; }
+.nb-filter-field > svg { position: absolute; left: 8px; color: var(--text-faint); pointer-events: none; }
+.nb-filter-field input { width: 100%; padding: 5px 26px 5px 27px; font-size: 12.5px; }
+.nb-filter-clear { position: absolute; right: 3px; display: inline-flex; padding: 3px; border-radius: 4px; color: var(--text-faint); }
+.nb-filter-clear:hover { color: var(--text); background: var(--border-soft); }
+.nb-filter-chips { display: flex; flex-wrap: wrap; gap: 4px; }
+.nb-chip {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  padding: 1px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 18px;
+}
+button.nb-chip:hover { background: var(--surface-2); color: var(--text); }
+button.nb-chip[aria-pressed="true"] { background: var(--accent-soft); border-color: var(--accent); color: var(--text); }
+.nb-chip > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nb-filter-empty { padding: 4px 10px; color: var(--text-faint); font-size: 12px; }
+.nb-filter-summary { padding: 0 8px 2px; color: var(--text-faint); font-size: 11px; }
+.nb-match-labels { display: flex; flex-wrap: wrap; gap: 3px; padding: 0 6px 3px 38px; }
+.nb-match-labels .nb-chip { padding: 0 6px; font-size: 10.5px; line-height: 16px; }
+
+/* ------------------------------------------------------------------- diálogo */
+.nb-custom-dialog { gap: 14px; }
+.nb-custom-dialog .nb-section { display: flex; flex-direction: column; gap: 6px; min-width: 0; border: 0; padding: 0; margin: 0; }
+.nb-custom-dialog .nb-section > legend,
+.nb-custom-dialog .nb-section > label { padding: 0; color: var(--text); font-size: 12px; font-weight: 600; }
+.nb-custom-dialog .nb-hint { margin: 0; color: var(--text-muted); font-size: 12px; line-height: 1.45; }
+.nb-preview {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-soft);
+}
+.nb-preview-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex: 1;
+  min-width: 0;
+  padding: 5px 8px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 500;
+}
+.nb-preview-row.has-accent { box-shadow: var(--shadow-sm), inset 2px 0 0 var(--nb-accent); }
+.nb-preview-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nb-preview-side { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1.2; }
+.nb-preview-desc { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
+.nb-preview-labels { display: flex; flex-wrap: wrap; gap: 4px; }
+.nb-icon-grid, .nb-color-grid { display: flex; flex-wrap: wrap; gap: 6px; }
+.nb-icon-option, .nb-color-option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface);
+  color: var(--text-muted);
+}
+.nb-icon-option:hover { background: var(--surface-2); color: var(--text); }
+.nb-icon-option[aria-pressed="true"], .nb-color-option[aria-pressed="true"], .nb-color-option.is-custom[data-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft-strong); color: var(--text); }
+.nb-color-option { width: 28px; height: 28px; border-radius: 999px; }
+.nb-color-option.is-none { font-size: 15px; line-height: 1; color: var(--text-muted); }
+.nb-color-option.is-custom { position: relative; overflow: hidden; }
+.nb-color-option input[type="color"] { position: absolute; inset: -6px; width: 44px; height: 44px; padding: 0; border: 0; background: none; cursor: pointer; }
+.nb-emoji-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.nb-emoji-row input { width: 92px; text-align: center; font-size: 15px; }
+.nb-emoji-suggestion { padding: 2px 6px; border: 1px solid transparent; border-radius: var(--radius); font-size: 16px; line-height: 1.3; }
+.nb-emoji-suggestion:hover { background: var(--surface-2); border-color: var(--border); }
+.nb-label-input { display: flex; gap: 6px; }
+.nb-label-input input { flex: 1; min-width: 0; }
+.nb-label-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.nb-label-list .nb-chip { padding-right: 2px; }
+.nb-label-list .nb-chip button { display: inline-flex; padding: 2px; margin-left: 2px; border-radius: 999px; color: var(--text-faint); }
+.nb-label-list .nb-chip button:hover { color: var(--danger); background: var(--danger-soft); }
+.nb-counter { align-self: flex-end; color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.nb-custom-dialog .row .nb-reset { margin-right: auto; }
+.nb-custom-dialog .nb-field-error { margin: 0; color: var(--danger); font-size: 12px; }

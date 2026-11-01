@@ -68,7 +68,10 @@
   --list-w: 280px;
   --float-inset: 12px;
   --float-gap: 12px;
-  --float-top: 46px;
+  /* Mesma folga dos lados. O overlay nativo do Windows ocupa só o canto; env() é 0 no navegador. */
+  --float-top: var(--float-inset);
+  --caption-width: 0px;
+  --caption-inset: 0px;
   --float-radius: 18px;
 }
 
@@ -467,6 +470,7 @@ body::before {
   grid-column: 3;
   grid-row: 1;
   justify-self: end;
+  position: relative;
   width: var(--list-track);
   min-width: 0;
   min-height: 0;
@@ -480,6 +484,8 @@ body::before {
   overflow: hidden;
 }
 .notelist-header {
+  position: relative;
+  z-index: 5;
   padding: 12px 12px 10px;
   border-bottom: 1px solid var(--border-soft);
   display: flex;
@@ -668,7 +674,8 @@ body::before {
  * Editor
  * ========================================================================= */
 .editor-pane { grid-column: 2; grid-row: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; background: var(--bg); }
-.editor-topbar { flex: 0 0 38px; display: flex; align-items: center; justify-content: flex-end; padding: 0 12px; -webkit-app-region: drag; }
+.editor-topbar { flex: 0 0 38px; display: flex; align-items: center; justify-content: flex-end; padding: 0 12px; padding-right: calc(12px + max(0px, var(--caption-width) - var(--float-inset) - var(--list-track, 0px) - var(--list-gap, 0px))); -webkit-app-region: drag; }
+.editor-topbar button, .editor-topbar a, .editor-topbar input, .editor-topbar select, .note-zoom { -webkit-app-region: no-drag; }
 .writing-layout { position: relative; -webkit-app-region: no-drag; z-index: 35; }
 .writing-layout > button { height: 28px; padding: 0 8px; gap: 6px; color: var(--text-muted); font-size: 12px; border-radius: 6px; }
 .writing-layout > button:hover, .writing-layout > button[aria-expanded=true] { background: var(--surface-2); color: var(--text); }
@@ -1010,7 +1017,7 @@ button.icon { padding: 4px 6px; }
   z-index: 100;
   top: calc(var(--float-top) + 8px);
   left: calc(var(--float-inset) + var(--sidebar-track, 0px) + var(--side-gap, 0px) + 12px);
-  right: calc(var(--float-inset) + var(--list-track, 0px) + var(--list-gap, 0px) + 12px);
+  right: max(calc(var(--float-inset) + var(--list-track, 0px) + var(--list-gap, 0px) + 12px), calc(var(--caption-width) + 8px));
 }
 .app-toast-info { background: var(--accent-soft); color: var(--accent); border-bottom-color: transparent; }
 
@@ -1117,10 +1124,18 @@ html[data-sidebar-collapsed] .sidebar, html[data-list-collapsed] .notelist { vis
 .brand .brand-name { flex: 1; }
 .pane-collapse { -webkit-app-region: no-drag; width: 24px; height: 24px; padding: 0; justify-content: center; color: var(--text-faint); border-radius: 6px; flex-shrink: 0; }
 .pane-collapse:hover { background: var(--surface-2); color: var(--text); }
-.notelist-header .title { display: flex; align-items: center; gap: 6px; }
+.notelist-header .title { display: flex; align-items: center; gap: 6px; -webkit-app-region: drag; }
+.notelist-collapse { position: absolute; top: 39px; right: 12px; z-index: 6; }
+.notelist-header .notelist-actions { padding-right: 30px; }
+.window-controls-trigger { position: fixed; z-index: 90; left: 0; right: 0; top: 0; height: 8px; -webkit-app-region: no-drag; }
+.window-controls { position: absolute; top: 0; right: 0; display: flex; pointer-events: none; opacity: 0; transition: opacity .15s ease; }
+.window-controls-trigger:hover .window-controls, .window-controls-trigger:focus-within .window-controls { pointer-events: auto; opacity: 1; }
+.window-controls button { width: 46px; height: 32px; padding: 0; justify-content: center; color: var(--text); background: var(--surface); border-radius: 0; }
+.window-controls button:hover { background: var(--surface-2); }
+.window-controls button.window-close:hover { background: #e81123; color: white; }
 .notelist-header .notelist-title-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .notelist-header .title .pane-collapse { margin-left: 2px; }
-.pane-rail { position: fixed; z-index: 40; top: 9px; left: var(--float-inset); display: flex; gap: 4px; -webkit-app-region: no-drag; }
+.pane-rail { position: fixed; z-index: 40; top: calc(var(--float-top) + 2px); left: var(--float-inset); display: flex; gap: 4px; -webkit-app-region: no-drag; }
 html:not([data-sidebar-collapsed]) .pane-rail { left: calc(var(--float-inset) + var(--sidebar-track) + var(--side-gap) + 6px); }
 .pane-rail button { height: 26px; min-width: 26px; padding: 0 6px; gap: 5px; justify-content: center; color: var(--text-muted); background: var(--surface); border: 1px solid var(--border); border-radius: 7px; box-shadow: var(--shadow-sm); font-size: 11.5px; }
 .pane-rail button:hover { color: var(--text); background: var(--surface-2); }
@@ -1247,6 +1262,7 @@ html:not([data-sidebar-collapsed]) .pane-rail { left: calc(var(--float-inset) + 
 .task-repeat { color:var(--accent); background:var(--accent-soft); }
 .dlg-help { color:var(--text-muted); font-size:11.5px; line-height:1.5; }
 .agenda-filters select { margin-left:auto; max-width:200px; font-size:12px; }
+.app:not(:has(.notelist)) .agenda > header { padding-right: var(--caption-inset); }
 @media (max-width: 720px) {
   :root { --float-inset: 8px; --float-gap: 8px; }
   .app { --sidebar-track: min(var(--sidebar-w), 38vw); }

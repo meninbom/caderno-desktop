@@ -8,7 +8,10 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { parseSearchQuery, toFtsExpression } from "../../shared/search";
+import { normalizeNotebookColor, normalizeNotebookDescription, normalizeNotebookIcon, normalizeNotebookLabels, parseStoredLabels, sanitizeNotebookCustomization, type CustomizeNotebookInput } from "../../shared/notebook-customization";
+import {CustomizeNotebookInputSchema} from "../../shared/notebook-customization-schema";
 import { normalizeTagName, tagKey } from "../../shared/tags";
+import { commitClipCapture, listClipTags, searchClipTitles, type ClipCommitInput, type ClipCommitResult } from "../clipper-commit";
 
 interface NoteRow {
   id: string;
@@ -153,6 +156,7 @@ export class NotesRepo {
   }
 
   search(query:string,limit:number):NoteMeta[]{
+    if(!query.trim())return toMeta(this.db,this.db.prepare(`SELECT ${META_COLS} FROM notes n WHERE n.deleted_at IS NULL ORDER BY ${ORDER.updated_desc} LIMIT ?`).all(limit) as NoteRow[]);
     const results=this.list({view:'all',query});
     const parsed=parseSearchQuery(query),expression=toFtsExpression(parsed.text);
     if(expression&&parsed.type!=='attachment'&&parsed.type!=='transcription'){
@@ -229,10 +233,19 @@ export class NotesRepo {
   }
 
   findByClipSource(sourceUrl: string): { title: string } | null {
-    return this.db.prepare("SELECT n.title FROM clipper_sources c JOIN notes n ON n.id=c.note_id WHERE c.source_url=? LIMIT 1").get(sourceUrl) as { title: string } | null;
+    return this.db.prepare("SELECT n.title FROM clipper_sources c JOIN notes n ON n.id=c.note_id WHERE c.source_url=? AND n.deleted_at IS NULL ORDER BY c.captured_at DESC LIMIT 1").get(sourceUrl) as { title: string } | null;
   }
   recordClipSource(noteId: string, sourceUrl: string, sourceTitle: string): void {
     this.db.prepare("INSERT INTO clipper_sources(source_key,note_id,source_url,source_title,captured_at) VALUES(?,?,?,?,?)").run(crypto.createHash("sha256").update(sourceUrl).digest("hex"), noteId, sourceUrl, sourceTitle, Date.now());
+  }
+  commitClip(input: ClipCommitInput): ClipCommitResult {
+    return commitClipCapture(this.db, input);
+  }
+  listClipTags(): { id: number; name: string }[] {
+    return listClipTags(this.db);
+  }
+  searchClipTitles(query: string): { id: string; title: string; notebook: string | null }[] {
+    return searchClipTitles(this.db, query);
   }
 
   /** A pasta só permanece se pertencer ao caderno de destino. Sem caderno, a nota fica sem pasta. */
@@ -382,17 +395,28 @@ export class EventsRepo {
   delete(id:string):boolean{return this.db.prepare('DELETE FROM calendar_events WHERE id=?').run(id).changes>0;}
 }
 
+interface NotebookRow { id: number; name: string; createdAt: number; icon: string | null; color: string | null; description: string | null; labels: string | null; noteCount: number }
+const NOTEBOOK_SELECT = `SELECT nb.id, nb.name, nb.created_at AS createdAt, nb.icon, nb.color, nb.description, nb.labels,
+  (SELECT COUNT(*) FROM notes n WHERE n.notebook_id = nb.id AND n.deleted_at IS NULL) AS noteCount FROM notebooks nb`;
+
+/** Linha do banco -> Notebook; valores antigos/ausentes/corrompidos voltam ao padrão. */
+function toNotebook(row: NotebookRow): Notebook {
+  return {
+    id: row.id, name: row.name, createdAt: row.createdAt, noteCount: row.noteCount,
+    ...sanitizeNotebookCustomization({ icon: row.icon, color: row.color, description: row.description, labels: parseStoredLabels(row.labels) }),
+  };
+}
+
 export class NotebooksRepo {
   constructor(private db: Database.Database) {}
 
   list(): Notebook[] {
-    return this.db
-      .prepare(
-        `SELECT nb.id, nb.name, nb.created_at,
-                (SELECT COUNT(*) FROM notes n WHERE n.notebook_id = nb.id AND n.deleted_at IS NULL) AS noteCount
-         FROM notebooks nb ORDER BY nb.name COLLATE NOCASE`
-      )
-      .all() as unknown as Notebook[];
+    return (this.db.prepare(`${NOTEBOOK_SELECT} ORDER BY nb.name COLLATE NOCASE`).all() as unknown as NotebookRow[]).map(toNotebook);
+  }
+
+  get(id: number): Notebook | null {
+    const row = this.db.prepare(`${NOTEBOOK_SELECT} WHERE nb.id = ?`).get(id) as NotebookRow | undefined;
+    return row ? toNotebook(row) : null;
   }
 
   create(name: string): Notebook | null {
@@ -401,7 +425,7 @@ export class NotebooksRepo {
       const result = this.db
         .prepare("INSERT INTO notebooks (name, created_at, updated_at) VALUES (?, ?, ?)")
         .run(name, now, now);
-      return { id: Number(result.lastInsertRowid), name, createdAt: now, noteCount: 0 };
+      return this.get(Number(result.lastInsertRowid));
     } catch (err) {
       if (err instanceof Error && err.message.includes("UNIQUE")) return null;
       throw err;
@@ -415,10 +439,26 @@ export class NotebooksRepo {
       if (err instanceof Error && err.message.includes("UNIQUE")) return null;
       throw err;
     }
-    const row = this.db.prepare("SELECT id, name, created_at FROM notebooks WHERE id = ?").get(id) as { id: number; name: string; created_at: number } | undefined;
-    if (!row) return null;
-    const noteCount = (this.db.prepare("SELECT COUNT(*) AS c FROM notes WHERE notebook_id = ? AND deleted_at IS NULL").get(id) as { c: number }).c;
-    return { id: row.id, name: row.name, createdAt: row.created_at, noteCount };
+    return this.get(id);
+  }
+
+  /**
+   * Atualiza ícone, cor, descrição e etiquetas do caderno. Campos ausentes mantêm
+   * o valor atual; `color: null` remove o acento. Retorna null se o caderno não existe.
+   */
+  customize(input: CustomizeNotebookInput): Notebook | null {
+    const parsed = CustomizeNotebookInputSchema.parse(input);
+    const sets: string[] = [], params: (string | number | null)[] = [];
+    if (parsed.icon !== undefined) { sets.push("icon = ?"); params.push(normalizeNotebookIcon(parsed.icon)); }
+    if (parsed.color !== undefined) { sets.push("color = ?"); params.push(parsed.color === null ? null : normalizeNotebookColor(parsed.color)); }
+    if (parsed.description !== undefined) { sets.push("description = ?"); params.push(normalizeNotebookDescription(parsed.description)); }
+    if (parsed.labels !== undefined) { sets.push("labels = ?"); params.push(JSON.stringify(normalizeNotebookLabels(parsed.labels))); }
+    if (sets.length) {
+      // As colunas vêm de uma lista fixa acima; os valores sempre são parâmetros.
+      const changed = this.db.prepare(`UPDATE notebooks SET ${sets.join(", ")}, updated_at = ? WHERE id = ?`).run(...params, Date.now(), parsed.id).changes;
+      if (!changed) return null;
+    }
+    return this.get(parsed.id);
   }
 
   delete(id: number): boolean {

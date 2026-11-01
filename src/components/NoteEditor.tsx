@@ -1,10 +1,10 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, {lazy,Suspense,useCallback,useEffect,useMemo,useRef,useState} from "react";
 import { EditorContent, useEditor } from "@tiptap/react";
 import Placeholder from "@tiptap/extension-placeholder";
 import { FONT_GROUPS, MIXED_FONT, selectionFontFamily, selectionFontSize } from "../editor/fonts";
 import { buildNoteExtensions } from "../editor/extensions";
 import fixWebmDuration from "fix-webm-duration";
-import { MediaPreview, type PreviewAttachment } from "./MediaPreview";
+import type { PreviewAttachment } from "./MediaPreview";
 import {
   Bold, Italic, Code, List, ListOrdered, SquareCheck, Quote, Link2, CodeXml, Folder,
   Heading1, Heading2, Heading3, Undo2, Redo2, Star, Pin, RotateCcw, Trash2, AudioLines,
@@ -21,9 +21,12 @@ import { NoteTags } from "./NoteTags";
 import { NotePicker } from "./NotePicker";
 import { useDialogFocus } from "../hooks/useDialogFocus";
 import { ReferencePane } from "./ReferencePane";
+import {NotebookBadge} from "./NotebookBadge";
 import { SaveTemplateDialog } from "./TemplateDialogs";
 import { TextColorPicker } from "./TextColorPicker";
-import { exportNote } from "../export/exportNote";
+import { AttachmentDropFeedback } from "./AttachmentDropFeedback";
+import { useNoteFileDrop } from "../hooks/useNoteFileDrop";
+import { isRiskyToOpen } from "../lib/note-attachments";
 
 function ToolBtn({ on, title, onClick, children }: { on?: boolean; title: string; onClick: () => void; children: React.ReactNode }) {
   return (
@@ -34,10 +37,12 @@ function ToolBtn({ on, title, onClick, children }: { on?: boolean; title: string
 }
 
 const SAVE_DEBOUNCE_MS = 600;
+const MediaPreview=lazy(()=>import("./MediaPreview").then(m=>({default:m.MediaPreview})));
 
-export function NoteEditor({ appearance, onAppearanceChange }: { appearance: Appearance; onAppearanceChange: (patch: Partial<Appearance>) => void }) {
+export function NoteEditor({ appearance, onAppearanceChange, emptyState, opening=false }: { appearance: Appearance; onAppearanceChange: (patch: Partial<Appearance>) => void; emptyState?:React.ReactNode;opening?:boolean }) {
   const { state, dispatch, refreshMeta, refreshNotes, openNote, saveNoteContent } = useAppStore();
   const note = state.openNote;
+  const backlinksRevision=useMemo(()=>state.notes.filter(item=>item.id!==note?.id).map(item=>`${item.id}:${item.updatedAt}:${item.title}:${item.deletedAt}`).join("|"),[state.notes,note?.id]);
   const noteRef = useRef(note);
   noteRef.current = note;
   const pendingPatch = useRef<{ title?: string; contentHtml?: string }>({});
@@ -45,6 +50,8 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
   const saveInFlight = useRef<Promise<boolean> | null>(null);
   const saveTimer = useRef<number | null>(null);
   const [linkDialog, setLinkDialog] = useState(false);
+  const [clipAppendBusy,setClipAppendBusy]=useState(false);
+  const clipAppendRequest=useRef<string|null>(null);
   const [internalDialog, setInternalDialog] = useState(false);
   const [selectedTarget, setSelectedTarget] = useState<{id:string;title:string}|null>(null);
   const [anchorText, setAnchorText] = useState("");
@@ -68,6 +75,7 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
   const exportPopover = useDismissablePopover(exportMenu, () => setExportMenu(false));
   const [refWidth, setRefWidth] = useState<number>(() => { const v = Number(localStorage.getItem("caderno.reference.width")); return Number.isFinite(v) && v >= 240 ? v : 420; });
   const splitRef = useRef<HTMLDivElement>(null);
+  const stageRef = useRef<HTMLDivElement>(null);
   const clampRef = (value: number) => { const total = splitRef.current?.clientWidth ?? 1200; return Math.round(Math.min(Math.max(240, value), Math.max(240, total - 360))); };
   const setRefWidthPersist = (value: number) => { const next = clampRef(value); setRefWidth(next); try { localStorage.setItem("caderno.reference.width", String(next)); } catch { /* preferência opcional */ } };
 
@@ -107,6 +115,7 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
     exporting.current = true; setExportMenu(false);
     setExportStatus({ text: `Preparando ${format.toUpperCase()}…`, kind: "busy" });
     try {
+      const {exportNote}=await import("../export/exportNote");
       const result = await exportNote(current.id, format);
       if (result.canceled) setExportStatus(null);
       else setExportStatus({ text: `${format.toUpperCase()} salvo em ${result.filePath}${result.warnings.length ? ` (${result.warnings.length} aviso(s): ${result.warnings[0]})` : ""}`, kind: "ok" });
@@ -138,6 +147,27 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
     onUpdate: ({ editor }) => scheduleSave(undefined, editor.getHTML()),
     onBlur: () => { if (saveTimer.current !== null) { window.clearTimeout(saveTimer.current); void flushSave(); } },
   });
+  useEffect(()=>{editor?.setEditable(note?.deletedAt===null&&!clipAppendBusy&&!opening,false);},[editor,note?.deletedAt,clipAppendBusy,opening]);
+  useEffect(()=>{
+    if(!editor)return;
+    const lock=async(event:Event)=>{
+      const value=(event as CustomEvent<{requestId:string;noteId:string;resolve:()=>void;reject:(error:unknown)=>void}>).detail;
+      if(noteRef.current?.id!==value.noteId){value.resolve();return;}
+      clipAppendRequest.current=value.requestId;
+      editor.setEditable(false,false);setClipAppendBusy(true);
+      try{if(!await flushSave())throw new Error("A nota não pôde ser salva.");if(clipAppendRequest.current!==value.requestId)throw new Error("Captura cancelada.");value.resolve();}
+      catch(error){clipAppendRequest.current=null;editor.setEditable(noteRef.current?.deletedAt===null,false);setClipAppendBusy(false);value.reject(error);}
+    };
+    const finish=(event:Event)=>{
+      const value=(event as CustomEvent<{requestId:string;noteId:string;note:import("../../shared/ipc").NoteFull|null}>).detail;
+      if(clipAppendRequest.current&&clipAppendRequest.current!==value.requestId)return;
+      clipAppendRequest.current=null;
+      if(value.note&&noteRef.current?.id===value.noteId&&pendingForId.current===null)editor.commands.setContent(value.note.contentHtml,false);
+      editor.setEditable(noteRef.current?.deletedAt===null,false);setClipAppendBusy(false);
+    };
+    window.addEventListener("caderno:lock-clip-append",lock);window.addEventListener("caderno:finish-clip-append",finish);
+    return()=>{window.removeEventListener("caderno:lock-clip-append",lock);window.removeEventListener("caderno:finish-clip-append",finish);};
+  },[editor,flushSave]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -252,14 +282,25 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
     try {const bytes=new Uint8Array(await file.arrayBuffer());let binary="";for(let i=0;i<bytes.length;i+=0x8000)binary+=String.fromCharCode(...bytes.subarray(i,i+0x8000));const saved=await client.saveImage(note.id,file.name,btoa(binary));if(!chain().setImage({src:`caderno-asset://${saved.storedName}`,alt:file.name,title:file.name}).run())throw new Error("O editor não aceitou a imagem nesta posição.");}
     catch(err){dispatch({type:"error",message:`Imagem não inserida: ${(err as Error).message}`});}
   };
-  useEffect(()=>{if(!editor)return;const dom=editor.view.dom;const raster=(dt:DataTransfer|null)=>{if(!dt)return null;const files=[...dt.files];for(const item of [...dt.items])if(item.kind==="file"){const f=item.getAsFile();if(f&&!files.includes(f))files.push(f);}return files.find(x=>x.type.startsWith("image/"))??null;};const paste=(e:ClipboardEvent)=>{const f=raster(e.clipboardData);if(f){e.preventDefault();void addImageFile(f);}};const drop=(e:DragEvent)=>{const f=raster(e.dataTransfer);if(f){e.preventDefault();void addImageFile(f);}};dom.addEventListener("paste",paste);dom.addEventListener("drop",drop);return()=>{dom.removeEventListener("paste",paste);dom.removeEventListener("drop",drop);};},[editor,note?.id]);
+  useEffect(()=>{if(!editor)return;const dom=editor.view.dom;const raster=(dt:DataTransfer|null)=>{if(!dt)return null;const files=[...dt.files];for(const item of [...dt.items])if(item.kind==="file"){const f=item.getAsFile();if(f&&!files.includes(f))files.push(f);}return files.find(x=>x.type.startsWith("image/"))??null;};/* Arrastar-e-soltar arquivos é tratado por useNoteFileDrop (várias mídias, posição de queda, feedback). */const paste=(e:ClipboardEvent)=>{const f=raster(e.clipboardData);if(f){e.preventDefault();void addImageFile(f);}};dom.addEventListener("paste",paste);return()=>{dom.removeEventListener("paste",paste);};},[editor,note?.id]);
+
+  const fileDrop = useNoteFileDrop({ editor, stageRef, note, onSaved: refreshNotes });
+  useEffect(() => { if (editor) (editor.storage as unknown as { attachment: { noteId: string | null } }).attachment.noteId = note?.id ?? null; }, [editor, note?.id]);
 
   useEffect(() => {
     const on = !document.documentElement.hasAttribute("data-no-spellcheck");
     document.querySelectorAll(".ProseMirror, .title-input").forEach((el) => el.setAttribute("spellcheck", String(on)));
   }, [editor, note?.id]);
 
+  useEffect(()=>{
+    if(!note||!editor)return;
+    const pane=editor.view.dom.closest<HTMLElement>(".editor-pane");if(!pane)return;
+    pane.dataset.editorReady=note.id;window.dispatchEvent(new Event("caderno:editor-ready"));
+    return()=>{delete pane.dataset.editorReady;};
+  },[editor,note?.id]);
+
   if (!note || !editor) {
+    if(!note&&emptyState)return <>{emptyState}</>;
     return <div className="editor-pane"><div className="editor-scroll"><div className="empty-state" style={{ margin: "18vh auto", maxWidth: 420 }}><NotebookPen size={24} strokeWidth={1.6} /><span>Selecione ou crie uma nota.</span></div></div></div>;
   }
   const inTrash = note.deletedAt !== null;
@@ -275,14 +316,15 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
   };
 
   return (
-    <div className="editor-pane">
+    <div className="editor-pane" inert={clipAppendBusy||opening} aria-busy={clipAppendBusy||opening}>
       <div className="editor-topbar" title="Links externos abrem no navegador padrão ao clicar">
         <div className="note-zoom" role="group" aria-label="Zoom da nota"><button aria-label="Diminuir zoom" title="Ctrl/Cmd −" onClick={() => onAppearanceChange({ editorZoom: Math.max(50, appearance.editorZoom - 10) })}>−</button><span>{appearance.editorZoom}%</span><button aria-label="Aumentar zoom" title="Ctrl/Cmd +" onClick={() => onAppearanceChange({ editorZoom: Math.min(200, appearance.editorZoom + 10) })}>+</button><button aria-label="Redefinir zoom" title="Ctrl/Cmd 0" onClick={() => onAppearanceChange({ editorZoom: 100 })}>100%</button></div>
         <button type="button" className="reference-toggle" aria-pressed={referenceId !== null} title={referenceId ? "Fechar nota de referência" : "Abrir outra nota ao lado (somente leitura)"} aria-label={referenceId ? "Fechar nota de referência" : "Abrir nota de referência ao lado"} onClick={() => { if (referenceId) setReferenceId(null); else { setPickerTarget(null); setReferencePicker(true); } }}><Columns2 size={14} /><span>Lado a lado</span></button>
         <WritingLayoutControl appearance={appearance} update={onAppearanceChange} />
       </div>
       <div className={`editor-split${referenceId ? " with-reference" : ""}`} ref={splitRef} style={referenceId ? ({ "--reference-w": `${refWidth}px` } as React.CSSProperties) : undefined}>
-      <div className="editor-stage editor-main-stage">
+      <div className="editor-stage editor-main-stage" ref={stageRef}>
+      <AttachmentDropFeedback overlay={fileDrop.overlay} status={fileDrop.status} onDismiss={fileDrop.dismiss} />
       <div className="editor-scroll">
         <div className="editor-content">
           <textarea
@@ -290,7 +332,7 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
             className="title-input"
             placeholder="Título da nota"
             rows={1}
-            readOnly={inTrash}
+            readOnly={inTrash||clipAppendBusy||opening}
             onChange={(e) => {
               scheduleSave(e.target.value);
               e.target.style.height = "auto";
@@ -305,7 +347,7 @@ export function NoteEditor({ appearance, onAppearanceChange }: { appearance: App
             }}
           />
           <EditorContent editor={editor} readOnly={inTrash} />
-          {!inTrash&&<NoteBacklinks id={note.id} revision={state.notes} onOpen={async id=>{if(await flushSave())await openNote(id)}}/>}
+          {!inTrash&&<NoteBacklinks id={note.id} revision={backlinksRevision} onOpen={async id=>{if(await flushSave())await openNote(id)}}/>}
         </div>
       </div>
       {!inTrash && (
@@ -488,6 +530,7 @@ function NoteFolderSelect() {
 function NoteNotebook() {
   const { state, refreshMeta, refreshNotes, openNote } = useAppStore();
   const note = state.openNote!;
+  const notebook=state.notebooks.find(item=>item.id===note.notebookId);
 
   const change = async (value: string) => {
     const notebookId = value === "" ? null : Number(value);
@@ -499,7 +542,7 @@ function NoteNotebook() {
 
   return (
     <span className="status-field" title="Mover para caderno">
-      <Book size={13} />
+      {notebook?<NotebookBadge notebook={notebook} size={13}/>:<Book size={13}/>}
       <select
         className="status-select"
         aria-label="Caderno da nota"
@@ -532,6 +575,7 @@ function NoteAttachments({onInsertImage,onInsertMedia}:{onInsertImage:(storedNam
   }, [note.id]);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => { setMenuOpen(false); setError(null); }, [note.id]);
+  useEffect(()=>{const changed=(event:Event)=>{if((event as CustomEvent<{noteId:string}>).detail?.noteId===note.id)void load();};window.addEventListener("caderno:attachments-changed",changed);return()=>window.removeEventListener("caderno:attachments-changed",changed);},[note.id,load]);
   useEffect(()=>{
     const open=async(event:Event)=>{const detail=(event as CustomEvent<{noteId:string;attachmentId:number}>).detail;if(detail?.noteId!==note.id)return;const found=(await client.listAttachments(note.id)).find(a=>a.id===detail.attachmentId);if(found&&(["application/pdf","text/html"].includes(found.mimeType??"")||found.mimeType?.startsWith("image/")||found.mimeType?.startsWith("video/")||found.mimeType?.startsWith("audio/"))){setItems(await client.listAttachments(note.id));setMenuOpen(false);setPreview(found);}};
     window.addEventListener("caderno:preview-attachment",open);return()=>window.removeEventListener("caderno:preview-attachment",open);
@@ -577,11 +621,11 @@ function NoteAttachments({onInsertImage,onInsertMedia}:{onInsertImage:(storedNam
           {items.map((a) => (
             <div key={`att-${a.id}`} className="attach-row">
               <Paperclip size={12} />
-              <button className="ghost" title="Abrir arquivo" onClick={async () => { if(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/")){setMenuOpen(false);setPreview(a);setError(null);return;}try { await client.openAttachment(note.id, a.id); setError(null); } catch (err) { setError(`Não foi possível abrir o anexo: ${(err as Error).message}`); } }}>
+              <button className="ghost" title="Abrir arquivo" onClick={async () => { if(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/")){setMenuOpen(false);setPreview(a);setError(null);return;}if(isRiskyToOpen(a.fileName)&&!window.confirm(`“${a.fileName}” é um arquivo executável ou script. Abri-lo pode executar código no computador. Continuar?`))return;try { await client.openAttachment(note.id, a.id); setError(null); } catch (err) { setError(`Não foi possível abrir o anexo: ${(err as Error).message}`); } }}>
                 {a.fileName}
               </button>
               {(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/"))&&<button className="icon" aria-label={`Visualizar ${a.fileName}`} title="Visualizar" onClick={()=>{setMenuOpen(false);setPreview(a);}}>◉</button>}
-              {(a.mimeType?.startsWith("image/")||a.mimeType==="application/pdf"||a.mimeType==="text/html"||a.mimeType?.startsWith("video/")||a.mimeType?.startsWith("audio/"))&&<button className="icon" aria-label={`Incorporar ${a.fileName} ao texto`} title="Incorporar ao texto na posição do cursor" onClick={()=>{setMenuOpen(false);onInsertMedia(a,note.id);}}>＋</button>}
+              <button className="icon" aria-label={`Incorporar ${a.fileName} ao texto`} title="Incorporar ao texto na posição do cursor" onClick={()=>{setMenuOpen(false);onInsertMedia(a,note.id);}}>＋</button>
               <span className="size">{Math.ceil(a.byteSize / 1024)} KiB</span>
               <button className="icon" title="Remover" onClick={async () => { if (window.confirm(`Remover o anexo “${a.fileName}”?`)) { await client.deleteAttachment(note.id, a.id); await load(); } }}>
                 <X size={12} />
@@ -590,7 +634,7 @@ function NoteAttachments({onInsertImage,onInsertMedia}:{onInsertImage:(storedNam
           ))}
         </div>
       )}
-      {preview&&<MediaPreview item={preview} onClose={closePreview}/>}
+      {preview&&<Suspense fallback={<div className="overlay"><section className="modal" role="status">Abrindo visualização…</section></div>}><MediaPreview item={preview} onClose={closePreview}/></Suspense>}
     </span>
   );
 }

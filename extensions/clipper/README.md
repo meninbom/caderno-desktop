@@ -1,29 +1,41 @@
-# Caderno Web Clipper (0.9.0)
+# Caderno Web Clipper (0.15.0)
 
-Extensão Manifest V3 para Chromium. O caminho normal é Chrome, Edge e Vivaldi com suporte padrão a extensões Chromium; esses navegadores não foram todos exercitados nesta rodada.
+Extensão Manifest V3 unpacked. O caminho de instalação é esta pasta, não uma loja e não um pacote gerado pelo build do app.
 
-## Instalação manual
+## Onde carregar
 
-1. Abra `Mais ações → Web Clipper → Configurar Clipper` no Caderno. Isso inicia a ponte somente em `127.0.0.1` enquanto o app estiver aberto.
-2. Em Chrome/Edge/Vivaldi, abra a página de extensões, habilite o modo de desenvolvedor e escolha **Carregar sem compactação** (ou equivalente).
-3. Selecione esta pasta `extensions/clipper` do checkout. Não copie para um perfil sincronizado. A extensão guarda o token em `chrome.storage.local`, nunca em storage sincronizado.
-4. No app, escolha **Gerar código de pareamento**. Digite o código numérico e cole o código de conexão mostrado na extensão. O pareamento expira em dois minutos e só vale uma vez.
-5. Abra uma página http/https, selecione a extensão (ou use `Alt+Shift+X`), escolha caderno e modo e clique **Salvar página**. Artigo, seleção e página são capturados apenas por ação explícita. Imagens não são baixadas.
+1. No Caderno: `Mais ações → Web Clipper → Configurar Clipper`. A ponte escuta só em `127.0.0.1:43187` enquanto o app está aberto.
+2. No Chrome, Edge ou Vivaldi: modo de desenvolvedor → **Carregar sem compactação**.
+3. Selecione a pasta `extensions/clipper` deste checkout. Não copie para um perfil sincronizado. O token fica em `chrome.storage.local`.
 
-O botão **Desconectar** remove o token da extensão. No app, **Desconectar e revogar acesso** revoga o token guardado no cofre do SO e fecha a ponte; o token inválido pode permanecer no `storage.local` até a extensão ser desconectada ou pareada novamente. O token expira após 30 dias. A ponte não inicia com o app fechado. Porta ocupada apresenta erro na tela do app.
+Atualize o app e a extensão juntos. A pasta da extensão não atualiza a ponte de uma instalação antiga.
 
-O endpoint aceita somente JSON limitado a 1 MB, host loopback e o Origin da extensão pareada; a autorização usa token aleatório além de nonce/code de pareamento de uso único. A nota registra título, URL, data da página e data de captura. Scripts, formulários, frames, eventos, URLs ativas e imagens remotas não são importados.
+## O que a captura faz
 
-## Limites conhecidos desta versão
+- Modos: artigo, seleção, página e favorito. A seleção usa `Range.cloneContents()` e não edita a página.
+- O artigo é uma heurística local (`article` / `main` / blocos de texto). Não é o Mozilla Readability.
+- Prévia, título editável, filtro de caderno, etiquetas, comentário separado e destino novo ou acréscimo a uma nota.
+- Ao acrescentar a uma nota aberta, o app salva a edição pendente e atualiza o editor. Uma falha no salvamento cancela a captura, mantendo o rascunho para tentar novamente.
+- Links relativos viram absolutos. Tabelas, listas e código permanecem. Imagens não são baixadas; o texto alternativo entra como texto.
+- A URL original fica na nota. `utm_*`, `fbclid`, `gclid` e outros rastreadores conhecidos só saem da chave de deduplicação. O fragmento permanece.
+- O mesmo `requestId` não cria outra nota. Outra seleção da mesma página pode. Artigo repetido pede confirmação. Nota na lixeira não bloqueia.
+- Um envio sem resposta fica em `pendingClip` no storage local para tentar de novo. Não há fila offline nem service worker.
+- O atalho sugerido é Alt+Shift+X. O popup mostra o atalho que o navegador realmente atribuiu.
 
-### Correção do fluxo de captura (29/10/2026)
+## Segurança que não mudou
 
-O fetch GET de destinos executado pelo Chromium retornava 403 `ORIGIN_NOT_PAIRED`: o navegador omitia `Origin`, ao contrário do cliente HTTP usado nos testes anteriores. A extensão agora solicita destinos por POST JSON, mantendo a checagem estrita de origem e token na ponte. Atualize tanto o app quanto a extensão; atualizar só a pasta da extensão não atualiza a ponte de uma instalação antiga.
+Permissões: `activeTab`, `scripting`, `storage` e o host `http://127.0.0.1:43187/*`. Sem content script permanente e sem acesso a todos os sites. Pareamento com nonce de uso único (2 minutos), token Bearer de 30 dias no safeStorage, Origin pareado, JSON de no máximo 1 MB. A sanitização no app continua obrigatória.
 
-O CSS respeita `[hidden]`, ocultando corretamente o pareamento após conectar. Captura fica desabilitada sem página HTTP/HTTPS autorizada, com mensagem orientando a abertura pelo ícone. Ao retornar ao Caderno, a lista é atualizada para mostrar notas capturadas.
+O botão **Desconectar** apaga o token da extensão. **Desconectar e revogar acesso** no app apaga o token do cofre e fecha a ponte.
 
-O teste de integração executa o handler do botão, `chrome.scripting`, fetch no navegador e persistência SQLite, com uma permissão de host concedida somente à fixture na cópia temporária da extensão. Essa permissão não foi adicionada ao manifest distribuído e não comprova o gesto nativo `activeTab`.
+## Provas que esta pasta não substitui
 
-O atalho sugerido não garante que o navegador o atribuiu. No Chromium temporário de QA, `chrome.commands.getAll()` retornou `_execute_action` com `shortcut` vazio: pressionar Alt+Shift+X não abre o painel nesse perfil. Use o menu **Extensões → Caderno Web Clipper** para conceder `activeTab` por ação real, ou configure o atalho em `chrome://extensions/shortcuts`. O harness registra os comandos atribuídos e as respostas da ponte sem gravar tokens.
+`node scripts/test-clipper-extract.mjs` abre um Chromium com o extrator injetado numa fixture. Isso não é o gesto `activeTab`.
 
-O extrator local escolhe `article`, `main` ou `[role=main]` de maior texto e remove elementos ativos. Não incorpora a biblioteca Mozilla Readability. Captura imagem e links são limitados ao texto/HTML sanitizado; anexos remotos não são copiados. O processo exige que o app esteja aberto.
+`npm run test:clipper` sobe o app num perfil temporário e concede host da fixture só numa cópia da extensão. É prova HTTP e de handler do popup, não do gesto nativo.
+
+O gesto nativo continua sendo abrir a extensão pelo ícone ou pelo menu, numa página http/https, com o harness `scripts/test-clipper-native-gesture.mjs` quando houver uma pessoa para acionar o popup.
+
+## Backup
+
+O backup continua compatível com a versão 9. Mantém cada captura da mesma URL, a origem e o identificador de envio, inclusive após restauração. Backups antigos sem esses campos continuam aceitos. Não há anexos nesta captura, então a fila de anexos não recebe arquivo novo; o app é avisado de que uma nota mudou.

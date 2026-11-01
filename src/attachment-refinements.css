@@ -1,0 +1,80 @@
+/* Anexos incorporados à nota: conteúdo integrado ao texto, sem moldura, controles discretos (aparecem em hover/foco/seleção).
+   Só usa tokens do tema; o modal ampliado (.media-preview-backdrop) mantém o visual de diálogo. */
+
+/* ── Bloco ─────────────────────────────────────────────────────────────── */
+.ProseMirror figure.attachment-block { position: relative; min-width: 0; margin: 14px 0; padding: 0; overflow: visible; border: 0; border-radius: var(--radius-lg); background: transparent; box-shadow: none; font-family: var(--font-sans); font-size: var(--ui-size, 13px); line-height: 1.45; }
+.ProseMirror figure.attachment-block.ProseMirror-selectednode { outline: 2px solid color-mix(in srgb, var(--accent) 60%, transparent); outline-offset: 4px; }
+.ProseMirror figure.attachment-block .attachment-loading { margin: 0; padding: 6px 2px; color: var(--text-faint); font-size: 12px; }
+
+/* ── Barra: nome discreto sempre visível; ferramentas em hover/foco/seleção ───── */
+.media-preview.media-preview-inline { width: 100%; height: auto; overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
+.media-preview.media-preview-inline > header { display: flex; align-items: center; flex-wrap: nowrap; gap: 6px; min-height: 28px; padding: 0 0 4px; border: 0; background: transparent; }
+.media-preview.media-preview-inline > header > strong { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-muted); font-size: 12px; font-weight: 500; }
+.media-preview-inline .media-meta { flex: none; color: var(--text-faint); font-size: 11px; font-variant-numeric: tabular-nums; }
+.media-preview-inline .media-controls { flex-wrap: nowrap; margin-left: auto; gap: 2px; }
+@container editor-pane (max-width: 460px) {
+  .media-preview.media-preview-inline > header { flex-wrap: wrap; }
+  .media-preview.media-preview-inline > header > strong { flex: 1 1 100px; }
+  .media-preview-inline .media-controls { flex-basis: 100%; min-width: 0; max-width: 100%; flex-wrap: wrap; justify-content: flex-end; }
+}
+.attachment-block .media-controls, .attachment-block .attachment-drag-handle { opacity: 0; }
+.attachment-block:hover .media-controls, .attachment-block:hover .attachment-drag-handle,
+.attachment-block:focus-within .media-controls, .attachment-block:focus-within .attachment-drag-handle,
+.attachment-block.ProseMirror-selectednode .media-controls, .attachment-block.ProseMirror-selectednode .attachment-drag-handle { opacity: 1; }
+@media (hover: none) { .attachment-block .media-controls, .attachment-block .attachment-drag-handle { opacity: 1; } }
+@media (prefers-reduced-motion: no-preference) { .attachment-block .media-controls, .attachment-block .attachment-drag-handle { transition: opacity .12s ease; } }
+
+.attachment-block .media-controls span { color: var(--text-muted); font-size: 11px; }
+.attachment-block .media-controls button { display: inline-flex; align-items: center; justify-content: center; min-width: 24px; height: 24px; padding: 0 6px; border: 0; border-radius: var(--radius); background: transparent; color: var(--text-muted); font-size: 12px; line-height: 1; }
+.attachment-block .media-controls button:hover:not(:disabled) { background: var(--surface-2); color: var(--text); }
+.attachment-block .media-controls button.attachment-remove:hover { color: var(--danger); }
+.attachment-block .media-controls button:disabled { opacity: .4; }
+.attachment-block .media-controls button:focus-visible, .attachment-block .attachment-drag-handle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.attachment-block .attachment-drag-handle { display: inline-flex; align-items: center; flex: none; padding: 2px; border-radius: var(--radius); color: var(--text-faint); cursor: grab; }
+.attachment-block .attachment-drag-handle:hover { background: var(--surface-2); color: var(--text-muted); }
+.attachment-block .attachment-drag-handle:active { cursor: grabbing; }
+
+/* ── Corpo: sem fundo, moldura ou preenchimento ────────────────────────────── */
+.media-preview-inline .media-preview-body { display: block; flex: initial; min-height: 0; max-height: none; padding: 0; overflow: visible; background: transparent; }
+.media-preview-inline .media-preview-body > p { margin: 0; padding: 6px 2px; color: var(--text-faint); font-size: 12px; }
+.media-preview-inline .media-preview-body > .media-preview-error { max-width: none; padding: 8px 10px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger); text-align: left; }
+.media-preview-inline .preview-image-scroll { display: block; max-height: min(62vh, 460px); overflow: auto; border-radius: var(--radius-lg); }
+.media-preview-inline .preview-image { display: block; max-width: none; max-height: none; height: auto; object-fit: contain; object-position: left top; border-radius: var(--radius-lg); }
+.media-preview-inline .media-preview-body video { display: block; width: 100%; max-height: min(62vh, 420px); border-radius: var(--radius-lg); background: #000; }
+.media-preview-inline .media-preview-body audio { display: block; width: 100%; }
+
+.media-preview-inline .html-frame { height: min(60vh, 360px); min-height: 160px; max-height: 80vh; overflow: hidden; resize: vertical; border-radius: var(--radius-lg); background: #fff; box-shadow: 0 1px 4px color-mix(in srgb, var(--text) 16%, transparent); }
+.media-preview-inline .html-frame iframe { display: block; width: 100%; height: 100%; border: 0; background: #fff; }
+.media-preview-inline .html-preview-hint { padding: 4px 2px 0; background: transparent; color: var(--text-faint); font-size: 11px; }
+
+.media-preview-inline .pdf-preview-body { overflow: visible; }
+.pdf-workspace.inline .pdf-scroll { max-height: min(62vh, 480px); padding: 2px; border-radius: var(--radius-lg); }
+.media-preview-inline .pdf-page { margin: 0 auto; }
+.media-preview-inline canvas { border-radius: 2px; box-shadow: 0 1px 6px color-mix(in srgb, var(--text) 20%, transparent); }
+
+/* ── Cartão de arquivo sem prévia ──────────────────────────────────────────── */
+.attachment-file { display: block; min-width: 0; }
+.attachment-file-row { display: flex; align-items: center; gap: 10px; min-width: 0; padding: 8px 10px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--surface-2) 75%, transparent); }
+.attachment-file-row:hover { background: var(--surface-2); }
+.attachment-file-icon { display: inline-flex; align-items: center; justify-content: center; flex: none; width: 34px; height: 34px; border-radius: var(--radius-lg); background: var(--accent-soft); color: var(--accent); }
+.attachment-file-text { display: flex; flex-direction: column; flex: 1 1 auto; min-width: 0; }
+.attachment-file-text strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text); font-size: var(--ui-size, 13px); font-weight: 500; }
+.attachment-file-text small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-faint); font-size: 11px; }
+.attachment-block-file .media-controls { opacity: 1; margin-left: 0; }
+.attachment-block-file .attachment-file-open { color: var(--accent); font-weight: 500; }
+.attachment-block-file .attachment-file-open:hover:not(:disabled) { background: var(--accent-soft); color: var(--accent); }
+.attachment-file > .media-preview-error { margin: 6px 0 0; padding: 6px 10px; border-radius: var(--radius-lg); background: color-mix(in srgb, var(--danger) 8%, transparent); color: var(--danger); font-size: 12px; max-width: none; text-align: left; }
+
+/* ── Soltar arquivos na nota ───────────────────────────────────────────────── */
+.attachment-drop-overlay { position: absolute; inset: 6px; z-index: 20; display: flex; align-items: center; justify-content: center; border-radius: 14px; background: color-mix(in srgb, var(--accent) 8%, transparent); outline: 2px dashed color-mix(in srgb, var(--accent) 65%, transparent); outline-offset: -2px; pointer-events: none; }
+.attachment-drop-overlay > span { padding: 8px 14px; border-radius: 999px; background: var(--surface); color: var(--text); box-shadow: var(--shadow-md); font-size: var(--ui-size, 13px); }
+.attachment-drop-overlay.refused { background: color-mix(in srgb, var(--danger) 7%, transparent); outline-color: color-mix(in srgb, var(--danger) 70%, transparent); }
+.attachment-drop-line { position: absolute; z-index: 22; height: 3px; margin-top: -1px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); pointer-events: none; }
+.attachment-drop-status { position: absolute; top: 12px; left: 50%; z-index: 21; display: flex; align-items: flex-start; gap: 8px; max-width: min(560px, calc(100% - 24px)); padding: 8px 8px 8px 12px; overflow: hidden; transform: translateX(-50%); border-radius: var(--radius-lg); background: var(--surface); color: var(--text); box-shadow: var(--shadow-md); font-size: 12px; line-height: 1.45; }
+.attachment-drop-status[data-kind="error"] { color: var(--danger); }
+.attachment-drop-status > span { min-width: 0; overflow-wrap: anywhere; }
+.attachment-drop-status > button { display: inline-flex; flex: none; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: var(--radius); background: transparent; color: var(--text-muted); }
+.attachment-drop-status > button:hover { background: var(--surface-2); color: var(--text); }
+.attachment-drop-status > button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.attachment-drop-progress { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--accent); }
+@media (prefers-reduced-motion: no-preference) { .attachment-drop-progress { transition: width .2s ease; } }

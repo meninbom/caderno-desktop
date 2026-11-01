@@ -2,7 +2,9 @@ import React, { useEffect, useState } from "react";
 import { Palette, PenLine, ScanSearch, Database, Bell, Globe, RotateCcw, Trash2, Command, Settings } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { client } from "../api/client";
-import { ACCENT_PRESETS, DEFAULT_APPEARANCE, type Appearance } from "../state/appearance";
+import type { Appearance } from "../state/appearance";
+import { AppearanceStudio } from "./AppearanceStudio";
+import type { BackgroundAssetState } from "../state/backgroundAsset";
 import type { AttachmentJob } from "../../shared/ipc";
 
 type Section = "general" | "appearance" | "editor" | "indexing" | "data" | "clipper" | "raycast" | "log";
@@ -63,8 +65,9 @@ function jobText(j: AttachmentJob) {
   return j.status;
 }
 
-export function SettingsPage({ appearance, update, reset, jobs, refreshJobs, onSaveBackup, onRestoreBackup, onImportClick, onImportEml, onClipper }: {
+export function SettingsPage({ appearance, update, reset, background, saveError, jobs, refreshJobs, onSaveBackup, onRestoreBackup, onImportClick, onImportEml, onClipper }: {
   appearance: Appearance; update: (patch: Partial<Appearance>) => void; reset: () => void;
+  background: BackgroundAssetState; saveError: string;
   jobs: AttachmentJob[]; refreshJobs: () => Promise<void>;
   onSaveBackup: () => void; onRestoreBackup: () => void; onImportClick: () => void; onImportEml: () => void; onClipper: () => void;
 }) {
@@ -77,7 +80,6 @@ export function SettingsPage({ appearance, update, reset, jobs, refreshJobs, onS
   const [raycastCode, setRaycastCode] = useState<{ value: string; expiresAt: number } | null>(null);
   const [raycastError, setRaycastError] = useState("");
   const [raycastBusy, setRaycastBusy] = useState(false);
-  const customAccent = appearance.accent ?? "#1b4ed8";
   const errorJobs = jobs.filter((j) => j.status === "error").length;
   const errorLogs = state.log.filter((l) => l.level === "error").length;
 
@@ -173,7 +175,7 @@ export function SettingsPage({ appearance, update, reset, jobs, refreshJobs, onS
         ))}
       </nav>
 
-      <div className="settings-body">
+      <div className={`settings-body${section === "appearance" ? " settings-body-appearance" : ""}`}>
         {section === "general" && <>
           <h2>Geral</h2>
           <Row label="Iniciar com o Windows" hint="Abre o Caderno automaticamente ao entrar no Windows.">
@@ -182,23 +184,7 @@ export function SettingsPage({ appearance, update, reset, jobs, refreshJobs, onS
           {startup && !startup.available && <p className="set-note">Disponível no aplicativo instalado no Windows.</p>}
           {startupError && <p role="alert" className="set-note">{startupError}</p>}
         </>}
-        {section === "appearance" && <>
-          <h2>Aparência</h2>
-          <Segmented label="Tema" value={state.theme} options={[{ value: "light", label: "Claro" }, { value: "dark", label: "Escuro" }]} onChange={(theme) => dispatch({ type: "theme", theme })} />
-          <Row label="Cor de destaque" hint="Botões, seleção, links e foco.">
-            <div className="swatches" role="radiogroup" aria-label="Cor de destaque">
-              {ACCENT_PRESETS.map((p) => (
-                <button key={p.name} role="radio" aria-checked={appearance.accent === p.value} title={p.name} aria-label={p.name}
-                  className={`swatch${appearance.accent === p.value ? " on" : ""}`} style={{ background: p.value ?? "#1b4ed8" }} onClick={() => update({ accent: p.value })} />
-              ))}
-              <input type="color" aria-label="Cor personalizada" value={customAccent} onChange={(e) => update({ accent: e.target.value })} />
-            </div>
-          </Row>
-          <Toggle label="Recolher barra lateral" hint="Atalho: Ctrl+\" checked={appearance.sidebarCollapsed} onChange={(sidebarCollapsed) => update({ sidebarCollapsed })} />
-          <Toggle label="Recolher lista de notas" hint="Atalho: Ctrl+Alt+\" checked={appearance.listCollapsed} onChange={(listCollapsed) => update({ listCollapsed })} />
-          <Slider label="Largura da barra lateral" value={appearance.sidebarWidth} min={190} max={320} step={2} unit="px" onChange={(v) => update({ sidebarWidth: v })} />
-          <Slider label="Largura da lista de notas" value={appearance.listWidth} min={230} max={420} step={2} unit="px" onChange={(v) => update({ listWidth: v })} />
-        </>}
+        {section === "appearance" && <AppearanceStudio appearance={appearance} update={update} reset={reset} background={background} saveError={saveError} theme={state.theme} setTheme={theme=>dispatch({type:"theme",theme})} />}
 
         {section === "editor" && <>
           <h2>Editor</h2>
@@ -220,7 +206,7 @@ export function SettingsPage({ appearance, update, reset, jobs, refreshJobs, onS
             <strong>Indexação local</strong>
             {jobs.length === 0 && <span className="set-empty">Nenhum anexo na fila de indexação.</span>}
             {jobs.slice(0, 20).map((j) => (
-              <div key={j.id} className={j.status === "error" ? "job-error" : undefined}>
+              <div key={j.id} data-job-id={j.id} className={j.status === "error" ? "job-error" : undefined}>
                 <span title={j.error ?? j.status}>{j.fileName}: {jobText(j)}{j.status === "error" && j.error ? ` — ${j.error}` : ""}</span>
                 {j.status === "error" && <button onClick={async () => { await client.retryAttachmentJob(j.id); await refreshJobs(); }}>Tentar novamente</button>}
                 {["queued", "running"].includes(j.status) && <button onClick={async () => { await client.cancelAttachmentJob(j.id); await refreshJobs(); }}>Cancelar</button>}
@@ -276,8 +262,8 @@ export function SettingsPage({ appearance, update, reset, jobs, refreshJobs, onS
           {state.log.length > 0 && <div className="set-actions"><button onClick={() => dispatch({ type: "clearLog" })}><Trash2 size={13} /> Limpar registro</button></div>}
         </>}
 
-        {(section === "appearance" || section === "editor") && (
-          <div className="set-actions footer"><button onClick={reset} disabled={JSON.stringify(appearance) === JSON.stringify(DEFAULT_APPEARANCE)}><RotateCcw size={13} /> Restaurar padrões de aparência</button></div>
+        {section === "editor" && (
+          <div className="set-actions footer"><button onClick={reset}><RotateCcw size={13} /> Restaurar padrões de aparência</button></div>
         )}
       </div>
     </section>

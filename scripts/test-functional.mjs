@@ -168,10 +168,10 @@ try {
     assert.equal(await page.evaluate(() => location.protocol), 'file:', 'navegação não confiável não pode substituir o renderer privilegiado');
     assert.equal((await invoke('app:meta')).name, 'caderno', 'bridge IPC continua limitado ao renderer principal confiável');
   });
-  await check('native window titlebar overlay configuration and window controls', async () => {
+  await check('window titlebar configuration and window controls', async () => {
     const mainSource = fs.readFileSync(path.join(root, 'electron/main.ts'), 'utf8');
     assert.match(mainSource, /titleBarStyle:\s*process\.platform === "win32"\s*\?\s*"hidden"/);
-    assert.match(mainSource, /titleBarOverlay:\s*titleBarOverlayOptions\(repos\.meta\.get\("theme"\)\)/);
+    assert.match(mainSource, /ipcMain\.on\("window:control"/);
     const result = await app.evaluate(async ({ BrowserWindow }) => {
       const win = BrowserWindow.getAllWindows()[0];
       const minSize = win.getMinimumSize();
@@ -279,9 +279,10 @@ try {
     assert.equal(await page.locator('.ProseMirror').evaluate(el=>el.contains(document.activeElement)),true,'fechar preview retorna foco ao editor');
     await openMenu('Mais ferramentas'); await page.getByTitle('Texto alternativo da imagem').click(); await page.locator('#image-alt').fill('captura de interface'); await page.getByRole('dialog',{name:'Texto alternativo',exact:true}).getByRole('button',{name:'Salvar',exact:true}).click();
     assert.equal(await img.getAttribute('alt'),'captura de interface','texto alternativo editável');
+    const pickerImageSrc=await img.getAttribute('src');
     const imageBase64=fs.readFileSync(png).toString('base64');
     for(const kind of ['paste','drop']) await tableEditor.evaluate((dom,{kind,imageBase64})=>{const bytes=Uint8Array.from(atob(imageBase64),c=>c.charCodeAt(0));const file=new File([bytes],'event-image.png',{type:'image/png'});const transfer=new DataTransfer();transfer.items.add(file);const event=kind==='paste'?new ClipboardEvent('paste',{clipboardData:transfer,bubbles:true,cancelable:true}):new DragEvent('drop',{dataTransfer:transfer,bubbles:true,cancelable:true});dom.dispatchEvent(event);},{kind,imageBase64});
-    await page.waitForFunction(()=>document.querySelectorAll('.ProseMirror img').length>0);
+    await page.waitForFunction(()=>document.querySelectorAll('.ProseMirror img').length>=2);
     const noteId=(await invoke('notes:list',{view:'all'})).find(n=>n.title==='Tabela QA').id;
     assert.equal((await invoke('attachments:list',{noteId})).length,3,'picker, paste e drop salvam os bytes no store local');
     const beforeInvalid=(await invoke('attachments:list',{noteId})).length;
@@ -290,7 +291,7 @@ try {
     const content=await tableEditor.innerHTML();
     assert.match(content,/caderno-asset:\/\/[0-9a-f-]{36}\.(png|jpg|webp)/i,'URI local opaca');
     assert.doesNotMatch(content,/data:image\//i,'HTML não contém base64');
-    const fileName=new URL(await img.getAttribute('src')).hostname;
+    const fileName=new URL(pickerImageSrc).hostname;
     const attached=(await invoke('attachments:list',{noteId})).find(a=>a.storedName===fileName);
     assert.ok(attached,'asset local associado à nota');
     assert.ok(fs.statSync(path.join(userData,'attachments',attached.storedName)).size>0,'bytes reais persistidos em attachments');
@@ -345,12 +346,12 @@ try {
     await captureSearchTheme('light','pdf-ocr-search-light-900x560.png');await captureSearchTheme('dark','pdf-ocr-search-dark-900x560.png');await captureSearchTheme('light','pdf-ocr-search-light-900x560.png');
     await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).click();await page.getByRole('dialog',{name:'Visualizar ocr-scan-two-pages.pdf'}).waitFor();await page.keyboard.press('Escape');
     fs.mkdirSync(path.join(root,'evidence/performance'),{recursive:true});const memoryAfter=await app.evaluate(({app})=>app.getAppMetrics().map(m=>({pid:m.pid,type:m.type,workingSetSize:m.memory.workingSetSize})));fs.writeFileSync(path.join(root,'evidence/performance/pdf-ocr-functional.json'),JSON.stringify({timestamp:new Date().toISOString(),fixture:{scanBytes:fs.statSync(scanFixture).size,mixedBytes:fs.statSync(mixedFixture).size,cancelBytes:fs.statSync(cancelFixture).size,scanPages:2,mixedPages:3,cancelPages:24},elapsedMs:Date.now()-pdfStarted,ocrPageProgress:{scan:{checkpoint:scannedJob.checkpoint,totalPages:scannedJob.totalPages},mixed:{checkpoint:mixedJob.checkpoint,totalPages:mixedJob.totalPages},canceled:{checkpoint:cancelProgress.checkpoint,totalPages:cancelProgress.totalPages}},typingDuringOcr:{characters:26,elapsedMs:ocrTypingElapsed,perKeyDelayMs:8},electronMemoryBefore:memoryBefore,electronMemoryDuring:memoryDuringOcr,electronMemoryAfter:memoryAfter,notes:'PowerShell child-process memory is not included in Electron app.getAppMetrics.'},null,2)+'\n');
-    await page.getByRole('button',{name:/Notas/}).first().click();const search=page.getByRole('searchbox',{name:'Buscar notas'});await search.fill('cobalt');const direct=await invoke('notes:list',{view:'all',query:'cobalt'});assert.ok(direct.some(n=>n.title==='Etapa 1C QA'),`consulta do main não encontrou anexo: ${JSON.stringify(direct)}`);await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).waitFor();assert.match(await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).innerText(),/Anexo: search-only-cobalt/,'resultado cita origem do anexo e snippet');
+    await page.getByRole('button',{name:/Notas/}).first().click();const search=page.getByRole('searchbox',{name:'Buscar notas'});await search.fill('cobalt');const direct=await invoke('notes:list',{view:'all',query:'cobalt'});assert.ok(direct.some(n=>n.title==='Etapa 1C QA'),`consulta do main não encontrou anexo: ${JSON.stringify(direct)}`);await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).filter({hasText:'Anexo: search-only-cobalt'}).waitFor();assert.match(await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).innerText(),/Anexo: search-only-cobalt/,'resultado cita origem do anexo e snippet');
     await page.getByRole('button',{name:'Filtros'}).click();await page.getByRole('radio',{name:'Anexos'}).click();assert.equal(await page.locator('.note-row').count(),1,'type:attachment pesquisa texto real');await page.screenshot({path:path.join(artifacts,'attachment-search-light-900x560.png')});
     await page.getByLabel('Filtrar por caderno').selectOption({index:0});assert.equal(await search.inputValue(),'cobalt type:attachment');await page.getByRole('button',{name:'Limpar filtros'}).click();assert.equal(await search.inputValue(),'cobalt');
     await page.getByRole('radio',{name:'Transcrições'}).click();await page.getByText(/Nenhuma transcrição indexada\/configurada/).waitFor();await page.getByRole('radio',{name:'Tudo'}).click();
-    await search.fill('ORCHID type:attachment');const ocrResult=await invoke('notes:list',{view:'all',query:'ORCHID type:attachment'});assert.ok(ocrResult.some(n=>n.matchSource==='ocr-winrt-orchid.png'),'WinRT OCR de imagem indexou texto local reconhecido');await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).click();await page.getByRole('dialog',{name:'Visualizar ocr-winrt-orchid.png'}).waitFor();await page.keyboard.press('Escape');
-    await search.fill('Page type:attachment');await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).waitFor();assert.match(await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).innerText(),/two-pages\.pdf/,'PDF pesquisável identifica arquivo fonte');
+    await search.fill('ORCHID type:attachment');const ocrResult=await invoke('notes:list',{view:'all',query:'ORCHID type:attachment'});assert.ok(ocrResult.some(n=>n.matchSource==='ocr-winrt-orchid.png'),'WinRT OCR de imagem indexou texto local reconhecido');await page.locator('.note-row').filter({hasText:'Anexo: ocr-winrt-orchid.png'}).click();await page.getByRole('dialog',{name:'Visualizar ocr-winrt-orchid.png'}).waitFor();await page.keyboard.press('Escape');
+    await search.fill('Page type:attachment');await page.locator('.note-row').filter({hasText:'Anexo: two-pages.pdf'}).waitFor();assert.match(await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).innerText(),/two-pages\.pdf/,'PDF pesquisável identifica arquivo fonte');
     await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).click();await page.locator('.title-input').waitFor();assert.equal(await page.locator('.title-input').inputValue(),'Etapa 1C QA','clique no resultado abre a nota de origem; a prévia é aberta explicitamente adiante');
      const transientPreview=page.locator('.media-preview-backdrop');if(await transientPreview.count()){await transientPreview.getByRole('button',{name:'Fechar visualização'}).click();await transientPreview.waitFor({state:'detached'});}
     await page.getByTitle('Alternar tema').click();await page.waitForFunction(async()=>{const r=await window.cadernoDesktop.invoke('theme:get',null);return r.ok&&r.data==='dark'});await search.fill('cobalt type:attachment');await page.locator('.note-row').filter({hasText:'Etapa 1C QA'}).waitFor();await page.screenshot({path:path.join(artifacts,'attachment-search-dark-900x560.png')});await page.getByTitle('Alternar tema').click();await page.waitForFunction(async()=>{const r=await window.cadernoDesktop.invoke('theme:get',null);return r.ok&&r.data==='light'});await search.fill('');
@@ -364,12 +365,12 @@ try {
     assert.equal(ranged.status,206);assert.equal(ranged.bytes,16);assert.match(ranged.contentRange,/^bytes 0-15\//);
     assert.equal(await page.evaluate(async name=>(await fetch(`caderno-asset://${name}`,{headers:{Range:'bytes=999999-'}})).status,pdf.storedName),416,'Range fora dos limites retorna 416');
     await page.keyboard.press('Escape');await page.waitForFunction(()=>document.activeElement?.getAttribute('title')==='Anexos');assert.equal(await page.evaluate(()=>document.activeElement?.getAttribute('title')),'Anexos','Escape restaura foco ao acionador de anexos');
-    const html=items.find(a=>a.mimeType==='text/html');await showAttachments();await page.getByRole('button',{name:`Visualizar ${html.fileName}`}).click();const frame=page.frameLocator('iframe[title^="Prévia isolada"]');
+    const html=items.find(a=>a.mimeType==='text/html');await showAttachments();await page.getByRole('button',{name:`Visualizar ${html.fileName}`}).click();const frame=page.frameLocator('.media-preview-backdrop iframe[title^="Prévia isolada"]');
     await frame.locator('#benign').waitFor();assert.equal(await frame.locator('#benign').innerText(),'Conteúdo HTML seguro');
     assert.equal(await frame.locator('body').evaluate(()=>typeof window.cadernoDesktop),'undefined','iframe sem ponte IPC');
     assert.equal(await frame.locator('script').count(),0,'sanitizador DOM elimina scripts');assert.equal(await frame.locator('form').count(),0,'sanitizador remove forms');assert.equal(await frame.locator('#top').getAttribute('href'),null,'URL de navegação removida');assert.equal(await frame.locator('img').getAttribute('src'),null,'URL remota de imagem removida');
     const policy=await page.evaluate(async name=>(await fetch(`caderno-asset://${name}`)).headers.get('content-security-policy'),html.storedName);assert.match(policy,/default-src 'none'/);
-    await frame.locator('#top').evaluate(el=>el.click());assert.equal(await page.evaluate(()=>location.protocol),'file:','tentativa de top navigation bloqueada');await page.screenshot({path:path.join(artifacts,'media-preview-html-benign.png')});await page.keyboard.press('Escape');await page.locator('iframe[title^="Prévia isolada"]').waitFor({state:'detached'});
+    await frame.locator('#top').evaluate(el=>el.click());assert.equal(await page.evaluate(()=>location.protocol),'file:','tentativa de top navigation bloqueada');await page.screenshot({path:path.join(artifacts,'media-preview-html-benign.png')});await page.keyboard.press('Escape');await page.locator('.media-preview-backdrop iframe[title^="Prévia isolada"]').waitFor({state:'detached'});
     const video=items.find(a=>a.mimeType==='video/webm');await showAttachments();await page.getByRole('button',{name:`Visualizar ${video.fileName}`}).click();const player=page.locator('.media-preview[role=dialog] video');
     await page.waitForFunction(()=>{const v=document.querySelector('.media-preview[role=dialog] video');return v?.readyState>=1&&v.duration>1.8;});assert.ok(await player.evaluate(v=>v.duration>1.8),'duração de fixture WebM local');
     await player.evaluate(v=>v.play());await page.waitForFunction(()=>document.querySelector('.media-preview[role=dialog] video')?.currentTime>0.1,{timeout:5000});const advanced=await player.evaluate(v=>{const t=v.currentTime;v.pause();return t;});assert.ok(advanced>0.1,'play avança corrente de vídeo');await page.screenshot({path:path.join(artifacts,'media-preview-video-frame.png')});
@@ -538,7 +539,7 @@ try {
     await page.locator(`.tiptap a[href="${href}"]`).click();
     await page.getByText(/está na lixeira/).waitFor();
     await page.locator('.sidebar').getByRole('button', { name: /Lixeira/ }).click(); await openTitle('Destino renomeado QA');
-    await page.getByRole('button', { name: 'Restaurar' }).click();
+    await page.getByRole('button', { name: 'Restaurar', exact: true }).click();
     assert.equal((await invoke('notes:get', { id: target.id })).deletedAt, null);
     assert.ok((await invoke('notes:get', { id: source.id })).contentHtml.includes(href));
   });
@@ -588,7 +589,7 @@ try {
   await check('trash soft delete, restore, purge confirmation cancel/accept, empty cancel/accept', async () => {
     await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Funcional 001');
     await page.getByTitle('Mover para a lixeira').click(); await page.getByRole('button', { name: 'Lixeira' }).click();
-    await openTitle('Funcional 001'); await page.getByRole('button', { name: 'Restaurar' }).click();
+    await openTitle('Funcional 001'); await page.getByRole('button', { name: 'Restaurar', exact: true }).click();
     await page.getByRole('button', { name: /^Notas(?: \d+)?$/ }).click(); await openTitle('Funcional 001'); await page.getByTitle('Mover para a lixeira').click();
     await page.getByRole('button', { name: 'Lixeira' }).click(); await openTitle('Funcional 001');
     page.once('dialog', d => d.dismiss()); await page.getByRole('button', { name: 'Excluir definitivamente' }).click();
@@ -883,7 +884,7 @@ try {
       assert.ok(attachBox && attachBox.x >= 0 && attachBox.x + attachBox.width <= 900 && attachBox.y >= 0 && attachBox.y + attachBox.height <= 560, `popover anexo fora da viewport compacta ${JSON.stringify(attachBox)}`);
       await page.keyboard.press('Escape');
     }
-    await page.getByRole('button',{name:'Configurações',exact:true}).click();await page.getByRole('button',{name:/Indexação de anexos/}).click();const queuedCount=await page.getByRole('button',{name:'Reindexar anexos'}).count();assert.ok(queuedCount,'reindex manual disponível no painel de jobs');await page.getByRole('button',{name:'Reindexar anexos'}).click();const queued=(await invoke('attachments:jobs')).find(j=>j.status==='queued');assert.ok(queued,'reindexação manual coloca jobs na fila');recoveryJobId=queued.id;const queuedRow=page.locator('.attachment-jobs > div').filter({hasText:queued.fileName}).last();await queuedRow.getByRole('button',{name:'Cancelar'}).click();await page.getByRole('button',{name:'Configurações',exact:true}).click();const canceled=(await invoke('attachments:jobs')).find(j=>j.id===recoveryJobId);assert.equal(canceled?.status,'cancel_requested','cancelamento real pela interface persiste no SQLite');
+    await page.getByRole('button',{name:'Configurações',exact:true}).click();await page.getByRole('button',{name:/Indexação de anexos/}).click();const queuedCount=await page.getByRole('button',{name:'Reindexar anexos'}).count();assert.ok(queuedCount,'reindex manual disponível no painel de jobs');await page.getByRole('button',{name:'Reindexar anexos'}).click();const queued=(await invoke('attachments:jobs')).find(j=>j.status==='queued');assert.ok(queued,'reindexação manual coloca jobs na fila');recoveryJobId=queued.id;const queuedRow=page.locator(`.attachment-jobs > div[data-job-id="${queued.id}"]`);await queuedRow.getByRole('button',{name:'Cancelar'}).click();await page.getByRole('button',{name:'Configurações',exact:true}).click();const canceled=(await invoke('attachments:jobs')).find(j=>j.id===recoveryJobId);assert.equal(canceled?.status,'cancel_requested','cancelamento real pela interface persiste no SQLite');
     const queuedScan=(await invoke('attachments:jobs')).find(j=>j.fileName==='ocr-scan-two-pages.pdf'&&j.status==='queued');assert.ok(queuedScan,'reindex colocou fixture OCR na fila persistida');const cancelScan=await invoke('attachments:cancel-job',{id:queuedScan.id});assert.equal(cancelScan,true);const orderCode=`const DB=require('better-sqlite3');const db=new DB(${JSON.stringify(path.join(userData,'caderno.sqlite'))});db.prepare('UPDATE attachment_jobs SET created_at=-1 WHERE id=?').run(${queuedScan.id});db.close();`;const orderResult=spawnSync(electronBin,['-e',orderCode],{cwd:root,encoding:'utf8',env:{...process.env,ELECTRON_RUN_AS_NODE:'1'}});assert.equal(orderResult.status,0,`fixture de fila OCR para reinício: ${orderResult.stderr}`);recoveryOcrJobId=queuedScan.id;
     await page.setViewportSize({ width: 1200, height: 780 });
     await app.close(); app = null;

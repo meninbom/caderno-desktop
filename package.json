@@ -1,6 +1,6 @@
 {
   "name": "caderno",
-  "version": "0.13.4",
+  "version": "0.17.0",
   "description": "App desktop de anotações inspirado no Evernote",
   "main": "dist-electron/main.cjs",
   "scripts": {
@@ -16,6 +16,15 @@
     "postinstall": "electron-builder install-app-deps",
     "package": "npm run build && electron-builder",
     "test:functional": "node scripts/test-functional.mjs",
+    "test:appearance": "node scripts/test-appearance.mjs",
+    "test:home": "node scripts/test-home-dashboard-ui.mjs",
+    "test:weather": "node scripts/test-home-weather-ui.mjs",
+    "test:note-attachments": "node scripts/test-note-attachments-ui.mjs",
+    "test:notebooks": "node scripts/test-notebook-customization-ui.mjs",
+    "test:performance": "node scripts/test-performance-ui.mjs",
+    "benchmark:ui": "node scripts/benchmark-ui.mjs",
+    "test:agenda": "node scripts/test-agenda-ui.mjs",
+    "test:clipper:extract": "node scripts/test-clipper-extract.mjs",
     "test:folders": "node scripts/test-folders-ui.mjs",
     "test:search": "node scripts/test-search.mjs",
     "test:palette": "node scripts/test-command-palette.mjs",
@@ -74,7 +83,7 @@
     "appId": "com.caderno.app",
     "productName": "Caderno",
     "directories": {
-      "output": "release-0.13.4"
+      "output": "release-0.17.0"
     },
     "files": [
       "dist/**/*",

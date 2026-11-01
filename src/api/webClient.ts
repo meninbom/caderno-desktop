@@ -22,6 +22,7 @@ import {
   markdownHeadline,
   markdownToNoteHtml,
 } from "../../shared/text";
+import { defaultNotebookCustomization, normalizeNotebookColor, normalizeNotebookDescription, normalizeNotebookIcon, normalizeNotebookLabels, sanitizeNotebookCustomization, type CustomizeNotebookInput } from "../../shared/notebook-customization";
 import type { AttachmentMeta, BackupRestoreResult, CadernoClient } from "./types";
 import { normalizeTagName, tagKey } from "../../shared/tags";
 import { tokenizeSearchText } from "../../shared/search";
@@ -39,7 +40,7 @@ interface WebNote {
   createdAt: number;
   updatedAt: number;
 }
-interface WebNotebook { id: number; name: string; createdAt: number }
+interface WebNotebook { id: number; name: string; createdAt: number; icon?: string; color?: string | null; description?: string; labels?: string[] }
 interface WebFolder { id: string; notebookId: number; name: string; sortOrder: number; createdAt: number; updatedAt: number }
 interface WebTag { id: number; name: string; color?: string | null }
 interface WebAttachment { id: number; noteId: string; fileName: string; byteSize: number; dataBase64: string; createdAt: number }
@@ -349,6 +350,7 @@ export class WebClient implements CadernoClient {
         name: nb.name,
         createdAt: nb.createdAt,
         noteCount: this.store.notes.filter(n => n.notebookId === nb.id && n.deletedAt === null).length,
+        ...sanitizeNotebookCustomization(nb),
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
   }
@@ -362,7 +364,17 @@ export class WebClient implements CadernoClient {
     const nb: WebNotebook = { id: this.nextNotebookId(), name, createdAt: Date.now() };
     this.store.notebooks.push(nb);
     this.persist();
-    return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount: 0 };
+    return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount: 0, ...defaultNotebookCustomization() };
+  }
+  async customizeNotebook(input: CustomizeNotebookInput): Promise<Notebook | null> {
+    const nb = this.store.notebooks.find(x => x.id === input.id);
+    if (!nb) return null;
+    if (input.icon !== undefined) nb.icon = normalizeNotebookIcon(input.icon);
+    if (input.color !== undefined) nb.color = input.color === null ? null : normalizeNotebookColor(input.color);
+    if (input.description !== undefined) nb.description = normalizeNotebookDescription(input.description);
+    if (input.labels !== undefined) nb.labels = normalizeNotebookLabels(input.labels);
+    this.persist();
+    return (await this.listNotebooks()).find(x => x.id === input.id) ?? null;
   }
 
   async renameNotebook(id: number, name: string): Promise<Notebook | null> {
@@ -372,7 +384,7 @@ export class WebClient implements CadernoClient {
     nb.name = name;
     this.persist();
     const noteCount = this.store.notes.filter(n => n.notebookId === id && n.deletedAt === null).length;
-      return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount };
+      return { id: nb.id, name: nb.name, createdAt: nb.createdAt, noteCount, ...sanitizeNotebookCustomization(nb) };
   }
   async listFolders(): Promise<NoteFolder[]> {
     return (this.store.folders ?? []).map(folder => ({
@@ -590,7 +602,7 @@ export class WebClient implements CadernoClient {
       app: "caderno",
       schemaVersion: 1,
       exportedAt: Date.now(),
-      notebooks: this.store.notebooks.map(nb => ({ id: nb.id, name: nb.name })),
+      notebooks: this.store.notebooks.map(nb => ({ id: nb.id, name: nb.name, ...sanitizeNotebookCustomization(nb) })),
       folders: (this.store.folders ?? []).map(folder => ({ ...folder })),
       notes: this.store.notes.map(n => ({
         id: n.id,
@@ -658,7 +670,7 @@ export class WebClient implements CadernoClient {
       nbSeq += 1;
       const id = nbSeq;
       nbMap.set(typeof nb.id === "number" ? nb.id : -1, id);
-      next.notebooks.push({ id, name: nb.name, createdAt: Date.now() });
+      next.notebooks.push({ id, name: nb.name, createdAt: Date.now(), ...sanitizeNotebookCustomization(nb as { icon?: unknown; color?: unknown; description?: unknown; labels?: unknown }) });
     }
     const folderMap = new Map<string, string>();
     const rawFolders = Array.isArray((p as { folders?: unknown }).folders) ? (p as { folders: Array<{ id?: unknown; notebookId?: unknown; name?: unknown; sortOrder?: unknown; createdAt?: unknown; updatedAt?: unknown }> }).folders : [];

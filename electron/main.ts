@@ -125,15 +125,40 @@ function exportFileName(title: string, ext: string): string {
 }
 const qaIpcCounts: Record<string, number> = {};
 let mainWindow: BrowserWindow | null = null;
+const clipAppendWaiters=new Map<string,{windowId:number;resolve:()=>void;reject:(error:Error)=>void;timer:ReturnType<typeof setTimeout>}>();
+ipcMain.on("caderno:clip-append-ready",(event,result:unknown)=>{
+  if(!result||typeof result!=="object")return;const value=result as {requestId?:unknown;ok?:unknown};
+  if(typeof value.requestId!=="string")return;const waiting=clipAppendWaiters.get(value.requestId);
+  if(!waiting||waiting.windowId!==event.sender.id||event.sender!==mainWindow?.webContents)return;
+  clearTimeout(waiting.timer);clipAppendWaiters.delete(value.requestId);
+  if(value.ok===true)waiting.resolve();else waiting.reject(new Error("Salve a nota aberta antes de acrescentar a captura."));
+});
+async function prepareClipAppend(noteId:string):Promise<()=>void>{
+  const win=mainWindow;if(!win||win.isDestroyed()||win.webContents.isLoadingMainFrame())return()=>{};
+  const requestId=crypto.randomUUID();
+  const release=()=>{if(!win.isDestroyed())win.webContents.send("caderno:clip-append-finished",{requestId,noteId,note:repos.notes.get(noteId)});};
+  try{await new Promise<void>((resolve,reject)=>{
+    const timer=setTimeout(()=>{clipAppendWaiters.delete(requestId);reject(new Error("A nota aberta não respondeu. Tente salvar a captura novamente."));},5000);
+    clipAppendWaiters.set(requestId,{windowId:win.webContents.id,resolve,reject,timer});
+    win.webContents.send("caderno:prepare-clip-append",{requestId,noteId});
+  });}catch(error){release();throw error;}
+  return release;
+}
+ipcMain.on("window:control", (event, action: unknown) => {
+  const win = mainWindow;
+  if (!win || win.isDestroyed() || event.sender !== win.webContents) return;
+  if (action === "minimize") win.minimize();
+  else if (action === "maximize") win.isMaximized() ? win.unmaximize() : win.maximize();
+  else if (action === "close") win.close();
+});
 let jobWorker: Electron.UtilityProcess | null = null;
 let jobBusy = false;
 let runningAttachmentJobId: number | null = null;
-let jobTimer: ReturnType<typeof setInterval> | null = null;
 let jobStopping = false;
 let quitAfterAttachmentWorker = false;
 let clipperBridge: ClipperBridge | null = null;
 let raycastBridge: RaycastBridge | null = null;
-let transcriptionRepo:TranscriptionsRepo|null=null,transcriptionWorker:Electron.UtilityProcess|null=null,transcriptionBusy=false,transcriptionTimer:ReturnType<typeof setInterval>|null=null,transcriptionStopping=false;
+let transcriptionRepo:TranscriptionsRepo|null=null,transcriptionWorker:Electron.UtilityProcess|null=null,transcriptionBusy=false,transcriptionStopping=false;
 let transcriptionTestTimeout:number|null=null;
 let transcriptionConfig:{runtime:string;ffmpeg:string}|null=null;
 let clipperStopping=false;
@@ -143,14 +168,14 @@ function runNextTranscription(){if(transcriptionBusy||transcriptionStopping||!tr
  const worker=utilityProcess.fork(path.join(__dirname,"transcription-worker.cjs"),[],{serviceName:"Caderno Transcrição Local",stdio:"ignore"});transcriptionWorker=worker;let settled=false;lifecycle("transcription-worker-start",{jobId:job.id,workerPath:path.join(__dirname,"transcription-worker.cjs")});
  worker.on("message",(message:unknown)=>{if(transcriptionWorker!==worker)return;const m=message as any;if(m.status==="ready"){lifecycle("transcription-worker-ready",{jobId:job.id});return;}if(m.status==="converting"||m.status==="transcribing"){transcriptionRepo?.progress(job.id,m.status,m.progress,m.stage);mainWindow?.webContents.send("transcription-jobs-changed",job.noteId);return;}if(m.status==="idle"){worker.kill();return;}settled=true;try{if(m.status==="completed")transcriptionRepo?.complete(job,m);else transcriptionRepo?.settle(job.id,m.status==="canceled"?"canceled":"failed",m.error);}catch(e){transcriptionRepo?.settle(job.id,"failed","Falha ao salvar a transcrição local.");lifecycle("transcription-save-failed",{jobId:job.id,message:e instanceof Error?e.message:String(e)});}});
   worker.once("error",(type)=>{lifecycle("transcription-worker-error",{jobId:job.id,type});transcriptionRepo?.settle(job.id,"failed",`Worker local falhou: ${type}.`);});worker.once("exit",code=>{lifecycle("transcription-worker-exit",{jobId:job.id,code,resultHandled:settled,stopping:transcriptionStopping});if(transcriptionWorker!==worker)return;if(!settled&&!transcriptionStopping)transcriptionRepo?.settle(job.id,"failed",`Worker de transcrição encerrou (código ${code}).`);transcriptionWorker=null;transcriptionBusy=false;if(!transcriptionStopping){mainWindow?.webContents.send("transcription-jobs-changed",job.noteId);setImmediate(runNextTranscription);}});
-  worker.postMessage({id:job.id,audioPath:a.filePath,fileName:job.fileName,jobDir,runtime,ffmpeg:cfg.ffmpeg,language:job.language,...(transcriptionTestTimeout?{timeout:transcriptionTestTimeout}:{})});}catch(error){transcriptionRepo.settle(job.id,"failed",error instanceof Error?error.message:String(error));transcriptionBusy=false;lifecycle("transcription-start-failed",{jobId:job.id,message:error instanceof Error?error.message:String(error)});}}
+  worker.postMessage({id:job.id,audioPath:a.filePath,fileName:job.fileName,jobDir,runtime,ffmpeg:cfg.ffmpeg,language:job.language,...(transcriptionTestTimeout?{timeout:transcriptionTestTimeout}:{})});}catch(error){transcriptionRepo.settle(job.id,"failed",error instanceof Error?error.message:String(error));transcriptionBusy=false;setImmediate(runNextTranscription);lifecycle("transcription-start-failed",{jobId:job.id,message:error instanceof Error?error.message:String(error)});}}
 
 function runNextAttachmentJob(): void {
   if(jobBusy||jobStopping||!repos)return;
   const job=repos.attachmentJobs.next(); if(!job)return;
   jobBusy=true;
   const attachment=repos.attachmentJobs.getAttachment(job.attachmentId);
-  if(!attachment){repos.attachmentJobs.fail(job.id,"Registro de anexo ausente.");jobBusy=false;runningAttachmentJobId=null;return;}
+  if(!attachment){repos.attachmentJobs.fail(job.id,"Registro de anexo ausente.");jobBusy=false;runningAttachmentJobId=null;setImmediate(runNextAttachmentJob);return;}
   runningAttachmentJobId=job.id;
   const worker=utilityProcess.fork(path.join(__dirname,"attachment-worker.cjs"), [], { serviceName: "Caderno Attachment OCR", stdio: "ignore" }); jobWorker=worker;
   const filePath=path.join(app.getPath("userData"),"attachments",attachment.storedName);
@@ -183,15 +208,6 @@ function runNextAttachmentJob(): void {
   worker.postMessage({id:job.id,filePath,fileName:job.fileName});
 }
 
-function titleBarOverlayOptions(theme: string | null) {
-  const dark = theme === "dark";
-  return {
-    color: dark ? "#0a0a0a" : "#fcfcfc",
-    symbolColor: dark ? "#f5f5f5" : "#27272a",
-    height: 40,
-  };
-}
-
 async function captureWindow(win: BrowserWindow): Promise<Buffer> {
   const image = await win.webContents.capturePage();
   const png = image.toPNG();
@@ -215,7 +231,6 @@ function createWindow(): BrowserWindow {
     title: "Caderno",
     icon: path.join(__dirname, "../dist/caderno.png"),
     titleBarStyle: process.platform === "win32" ? "hidden" : "default",
-    ...(process.platform === "win32" ? { titleBarOverlay: titleBarOverlayOptions(repos.meta.get("theme")) } : {}),
     backgroundColor: "#ffffff",
     show: !captureMode,
     webPreferences: {
@@ -366,6 +381,7 @@ function registerHandlers(): void {
     "notebooks:create": (input) => repos.notebooks.create(input.name),
     "notebooks:rename": (input) => repos.notebooks.rename(input.id, input.name),
     "notebooks:delete": (input) => repos.notebooks.delete(input.id),
+    "notebooks:customize": (input) => repos.notebooks.customize(input),
     "folders:list": () => repos.folders.list(),
     "folders:create": (input) => repos.folders.create(input.notebookId, input.name),
     "folders:rename": (input) => repos.folders.rename(input.id, input.name),
@@ -383,7 +399,6 @@ function registerHandlers(): void {
     "theme:get": () => repos.meta.get("theme"),
     "theme:set": (input) => {
       repos.meta.set("theme", input.value);
-      if (process.platform === "win32") mainWindow?.setTitleBarOverlay(titleBarOverlayOptions(input.value));
       return true;
     },
     "attachments:list": (input) => repos.attachments.list(input.noteId),
@@ -572,6 +587,10 @@ function registerHandlers(): void {
     if (!handler) return { ok: false, error: `Canal sem handler: ${channel}` };
     try {
       const data = await (handler as (input: unknown) => Promise<unknown>)(validated.data);
+      if(["attachments:save","images:save","attachments:delete","attachments:reindex","attachments:retry-job","import:markdown","import:eml","backup:restore","templates:apply"].includes(channel))setImmediate(()=>{
+        runNextAttachmentJob();runNextTranscription();
+        if(mainWindow&&!mainWindow.isDestroyed())mainWindow.webContents.send("attachment-jobs-changed");
+      });
       return { ok: true, data };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -607,7 +626,8 @@ app.whenReady().then(() => {
   };
   clipperBridge = new ClipperBridge({ notes: repos.notes, notebooks: repos.notebooks }, () => {
     if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('clipper-note-created');
-  });
+    setImmediate(runNextAttachmentJob);
+  },prepareClipAppend);
   raycastBridge = new RaycastBridge({ notes: repos.notes, notebooks: repos.notebooks, tasks: repos.tasks }, async noteId => {
     let win = mainWindow;
     if (!win || win.isDestroyed()) win = createWindow();
@@ -652,8 +672,7 @@ app.whenReady().then(() => {
     return new Response(Readable.toWeb(stream) as ReadableStream,{status,headers});
   });
   registerHandlers();
-  jobTimer=setInterval(runNextAttachmentJob,350);jobTimer.unref();runNextAttachmentJob();
-  transcriptionTimer=setInterval(runNextTranscription,700);transcriptionTimer.unref();runNextTranscription();
+  runNextAttachmentJob();runNextTranscription();
   createWindow();
   // Poll only while this process is alive. Delivered rows are persisted before OS notification.
   const scheduler=new LocalReminderScheduler((now,limit)=>repos.tasks.deliverDue(now,limit),{show(task){if(!Notification.isSupported())throw new Error('unsupported');const n=new Notification({title:'Lembrete de tarefa',body:task.title});n.on('click',()=>{if(mainWindow){mainWindow.show();mainWindow.focus();mainWindow.webContents.send('task-reminder-click',task.id);}});n.show();},fallback(task){mainWindow?.webContents.send('task-reminder-fallback',task.title);}});
@@ -668,10 +687,10 @@ app.on("window-all-closed", () => {
   if (process.platform !== "darwin") app.quit();
 });
 app.on("before-quit",event=>{
-  if(transcriptionWorker&&!transcriptionStopping){event.preventDefault();transcriptionStopping=true;if(transcriptionTimer)clearInterval(transcriptionTimer);transcriptionWorker.postMessage({cancel:true});const worker=transcriptionWorker;setTimeout(()=>{if(transcriptionWorker===worker)worker.kill();},2500).unref();worker.once("exit",()=>{transcriptionStopping=false;app.quit();});return;}
+  if(transcriptionWorker&&!transcriptionStopping){event.preventDefault();transcriptionStopping=true;transcriptionWorker.postMessage({cancel:true});const worker=transcriptionWorker;setTimeout(()=>{if(transcriptionWorker===worker)worker.kill();},2500).unref();worker.once("exit",()=>{transcriptionStopping=false;app.quit();});return;}
   if(raycastBridge?.status().enabled&&!raycastStopping){event.preventDefault();raycastStopping=true;void raycastBridge.close().catch(error=>lifecycle("raycast-close-error",{message:error instanceof Error?error.message:"Falha local"})).finally(()=>{raycastStopping=false;app.quit();});return;}
   if(jobStopping)return;
-  lifecycle("before-quit", { runningAttachmentJobId });jobStopping=true;if(jobTimer)clearInterval(jobTimer);
+  lifecycle("before-quit", { runningAttachmentJobId });jobStopping=true;
   if(clipperBridge&&!clipperStopping){event.preventDefault();clipperStopping=true;void clipperBridge.close().catch(error=>lifecycle("clipper-close-error",{message:error instanceof Error?error.message:String(error)})).finally(()=>{clipperStopping=false;app.quit();});}
   const worker=jobWorker;
   if(!worker)return;

@@ -1,1 +1,66 @@
-<!doctype html><html lang="pt-BR"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Caderno Clipper</title><link rel="stylesheet" href="popup.css"><main><header><strong>Caderno</strong><span>Web Clipper</span></header><section id="pair"><label for="code">Código do app</label><input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000"><label for="nonce">Código de conexão</label><input id="nonce" autocomplete="off" placeholder="Cole o código mostrado pelo app"><button id="pairButton">Conectar extensão</button></section><section id="capture" hidden><p id="origin"></p><label for="notebook">Salvar no caderno</label><select id="notebook"></select><fieldset><legend>O que salvar</legend><label><input type="radio" name="mode" value="article" checked> Artigo</label><label><input type="radio" name="mode" value="selection"> Seleção</label><label><input type="radio" name="mode" value="page"> Página</label></fieldset><p class="hint">Somente texto e HTML. Imagens externas não são baixadas.</p><button id="save">Salvar página</button><button id="disconnect" class="quiet">Desconectar</button></section><p id="message" role="status"></p></main><script src="popup.js"></script></html>
+<!doctype html>
+<html lang="pt-BR">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Caderno Clipper</title>
+<link rel="stylesheet" href="popup.css">
+<main>
+  <header><img src="icons/32.png" alt=""><strong>Caderno</strong><span>Web Clipper</span></header>
+  <section id="pair">
+    <label for="code">Código do app</label>
+    <input id="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" placeholder="000000">
+    <label for="nonce">Código de conexão</label>
+    <input id="nonce" autocomplete="off" placeholder="Cole o código mostrado pelo app">
+    <button id="pairButton" type="button">Conectar extensão</button>
+  </section>
+  <section id="capture" hidden>
+    <p id="origin"></p>
+    <p id="shortcut" class="hint"></p>
+    <div id="pending" class="banner" hidden>
+      <p>Há um envio anterior sem resposta confirmada.</p>
+      <button id="retryPending" type="button">Tentar de novo</button>
+      <button id="discardPending" type="button" class="quiet">Descartar</button>
+    </div>
+    <label for="title">Título</label>
+    <input id="title" maxlength="300" autocomplete="off">
+    <label for="notebookFilter">Filtrar cadernos</label>
+    <input id="notebookFilter" type="search" placeholder="Nome do caderno">
+    <label for="notebook">Salvar no caderno</label>
+    <select id="notebook"></select>
+    <fieldset>
+      <legend>O que salvar</legend>
+      <label><input type="radio" name="mode" value="article" checked> Artigo</label>
+      <label><input type="radio" name="mode" value="selection"> Seleção</label>
+      <label><input type="radio" name="mode" value="page"> Página</label>
+      <label><input type="radio" name="mode" value="bookmark"> Favorito</label>
+    </fieldset>
+    <fieldset>
+      <legend>Destino</legend>
+      <label><input type="radio" name="destination" value="new" checked> Nova nota</label>
+      <label><input type="radio" name="destination" value="append"> Acrescentar a uma nota</label>
+    </fieldset>
+    <div id="appendBox" hidden>
+      <label for="noteQuery">Buscar nota pelo título</label>
+      <input id="noteQuery" type="search" maxlength="80" placeholder="Pelo menos duas letras">
+      <div id="noteResults"></div>
+      <p id="appendWarning" class="hint">O texto é acrescentado ao final da nota. Edições abertas no Caderno são salvas antes do acréscimo.</p>
+    </div>
+    <label for="tags">Etiquetas</label>
+    <input id="tags" list="tagList" maxlength="200" placeholder="Separadas por vírgula, até 8" autocomplete="off">
+    <datalist id="tagList"></datalist>
+    <label for="comment">Comentário</label>
+    <textarea id="comment" maxlength="2000" rows="2" placeholder="Fica separado do texto da página"></textarea>
+    <div id="preview" tabindex="0" role="region" aria-label="Prévia do texto"></div>
+    <p id="previewMeta" class="hint"></p>
+    <button id="refreshPreview" type="button" class="quiet">Atualizar prévia</button>
+    <p class="hint">Imagens externas não são baixadas. Tabelas, listas e links entram no texto.</p>
+    <button id="save" type="button">Salvar no Caderno</button>
+    <div id="duplicateActions" hidden>
+      <button id="saveAnyway" type="button">Salvar como outra nota</button>
+    </div>
+    <button id="disconnect" type="button" class="quiet">Desconectar</button>
+  </section>
+  <p id="message" role="status"></p>
+</main>
+<script src="extractor.js"></script>
+<script src="popup.js"></script>

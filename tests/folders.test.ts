@@ -50,7 +50,7 @@ describe("pastas de notas", () => {
     expect(note?.title).toBe("Antiga");
     expect(note?.notebookId).toBe(1);
     expect(note?.folderId).toBeNull();
-    expect(db.prepare("SELECT MAX(version) AS version FROM migration_log").get()).toEqual({ version: 15 });
+    expect(db.prepare("SELECT MAX(version) AS version FROM migration_log").get()).toEqual({ version: 16 });
     expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='note_folders'").get()).toEqual({ name: "note_folders" });
   });
 

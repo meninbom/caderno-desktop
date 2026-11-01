@@ -54,6 +54,7 @@ export interface CadernoClient {
   listNotebooks(): Promise<Notebook[]>;
   createNotebook(name: string): Promise<Notebook | null>;
   renameNotebook(id: number, name: string): Promise<Notebook | null>;
+  customizeNotebook(input: import("../../shared/notebook-customization").CustomizeNotebookInput): Promise<Notebook | null>;
   deleteNotebook(id: number): Promise<boolean>;
   listFolders(): Promise<NoteFolder[]>;
   createFolder(notebookId: number, name: string): Promise<NoteFolder | null>;

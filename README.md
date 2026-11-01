@@ -1,6 +1,8 @@
 # Caderno
 
-Versão **0.13.3**. Tamanho de fonte por trecho nas notas, badges de etiquetas na lista. Etiquetas coloridas, zoom e tamanho de fonte nas notas, links externos clicáveis, nova tela de Tarefas. Pastas de notas dentro dos cadernos com arrastar e soltar, modelos de notas, consulta lado a lado, exportação PDF/HTML e seletores de cor do texto e marca-texto. Busca geral e comandos com **Ctrl+K**, referências entre notas, marcações de PDF e tarefas recorrentes com prioridade. Os relatórios históricos descrevem versões anteriores; modelos de voz, dados pessoais, instaladores e evidências locais não fazem parte do repositório.
+Versão **0.17.0**. Home com saudação, pesquisa central e widgets inferiores; clima com cidade configurável, temperatura, condição e mínima/máxima. Inclui anexos com prévias e arraste para a nota, cadernos personalizáveis, lista virtualizada, carregamento sob demanda, efeitos de fundo em worker e os refinamentos de Tarefas, Calendário e Clipper. Consulte [Home e clima](docs/HOME_LAYOUT.md), [anexos e cadernos](docs/NOTAS_CADERNOS_INICIO.md), [performance da 0.15.0](docs/PERFORMANCE.md) e [instalação da extensão](extensions/clipper/README.md).
+
+O estúdio de aparência mantém estilos, cores, tipografia, transparência e fundos próprios. Imagens e gradientes podem receber grafismo, pixel art, ASCII e retícula; temas podem ser exportados e importados com a imagem. Mantém fontes por trecho, etiquetas coloridas, pastas com arrastar e soltar, modelos, consulta lado a lado, exportação PDF/HTML, busca geral com **Ctrl+K**, referências entre notas, marcações de PDF e tarefas recorrentes. Os relatórios históricos descrevem versões anteriores; dados pessoais, instaladores e evidências locais não fazem parte do repositório.
 
 Aplicativo **desktop** de anotações para Windows, inspirado nos fluxos de
 organização do Evernote e com visual limpo e minimalista (próximo ao T3 Code).
@@ -33,6 +35,7 @@ Interface em português do Brasil.
 - **Tarefas:** prioridade baixa/normal/alta, filtro por prioridade e repetição diária/semanal/mensal. A conclusão cria uma única próxima ocorrência futura no fuso da tarefa; atrasos são pulados, o dia mensal original é preservado e meses curtos usam o último dia. Reabrir a ocorrência concluída não gera duplicação. Edite a próxima ocorrência para encerrar a repetição. Lembretes são entregues enquanto o app está aberto.
 - **Lixeira:** restaurar, excluir definitivamente (com confirmação) e esvaziar lixeira.
 - **Temas** claro/escuro persistentes.
+- **Aparência personalizada:** seis estilos editáveis, cores, fontes, densidade, transparência, sombras, bordas e espaçamento. Fundos com imagens próprias, gradientes e tratamentos de grafismo, pixel art, ASCII e retícula. Importação/exportação de temas e prévia ao vivo. Veja [o guia de aparência](docs/APARENCIA.md).
 - **Anexos:** adicionar, abrir e remover arquivos por nota (armazenados em diretório dedicado).
 - **Importar/exportar Markdown** e **backup/restauração** JSON com validação e
   preservação dos dados em caso de falha (restauração é transacional).

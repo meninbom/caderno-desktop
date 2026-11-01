@@ -1,27 +1,48 @@
-import React, { useEffect, useRef, useState } from "react";
-import { X, Search, PanelLeftOpen, PanelRightOpen } from "lucide-react";
+import React, {lazy,Suspense,useEffect,useRef,useState} from "react";
+import { X, Search, PanelLeftOpen, PanelRightOpen, Minus, Square,NotebookPen } from "lucide-react";
 import { Sidebar } from "./components/Sidebar";
 import { NoteList } from "./components/NoteList";
-import { NoteEditor } from "./components/NoteEditor";
 import { useAppStore } from "./state/store";
 import { client } from "./api/client";
-import {LocalAgenda} from './components/LocalAgenda';
-import { SettingsPage } from "./components/SettingsPage";
 import { useAppearance } from "./state/appearance";
-import type { AttachmentJob } from "../shared/ipc";
+import { useBackgroundAsset } from "./state/backgroundAsset";
+import { WorkspaceBackground } from "./components/WorkspaceBackground";
+import {useAttachmentJobs} from "./hooks/useAttachmentJobs";
 
-import { CommandPalette, type PaletteCommand } from './components/CommandPalette';
+import type {PaletteCommand} from './components/CommandPalette';
 import { TaskDialog, EventDialog } from './components/AgendaDialogs';
 import { TagManager } from './components/TagManager';
 import { TemplatePickerDialog } from './components/TemplateDialogs';
 
+const NoteEditor=lazy(()=>import("./components/NoteEditor").then(m=>({default:m.NoteEditor})));
+const SettingsPage=lazy(()=>import("./components/SettingsPage").then(m=>({default:m.SettingsPage})));
+const LocalAgenda=lazy(()=>import("./components/LocalAgenda").then(m=>({default:m.LocalAgenda})));
+const CommandPalette=lazy(()=>import("./components/CommandPalette").then(m=>({default:m.CommandPalette})));
+const HomeDashboard=lazy(()=>import("./components/HomeDashboard").then(m=>({default:m.HomeDashboard})));
+function EmptyEditor({loading=false}:{loading?:boolean}){return <div className="editor-pane"><div className="editor-scroll"><div className="empty-state" style={{margin:"18vh auto",maxWidth:420}}><NotebookPen size={24} strokeWidth={1.6}/><span role={loading?"status":undefined}>{loading?"Abrindo nota…":"Selecione ou crie uma nota."}</span></div></div></div>;}
+function AreaLoading(){return <div className="area-loading" role="status">Carregando…</div>;}
+
 export function App() {
   const { state, dispatch, refreshMeta, refreshNotes, openNote } = useAppStore();
+  const editorStarted=useRef(false);if(state.openNote)editorStarted.current=true;
+  const activeNoteId=useRef(state.openNoteId);activeNoteId.current=state.openNoteId;
+  useEffect(()=>{
+    const offPrepare=window.cadernoDesktop?.onPrepareClipAppend?.(async value=>{
+      if(activeNoteId.current!==value.noteId||!document.querySelector(".tiptap"))return;
+      await new Promise<void>((resolve,reject)=>window.dispatchEvent(new CustomEvent("caderno:lock-clip-append",{detail:{...value,resolve,reject}})));
+    });
+    const offFinish=window.cadernoDesktop?.onClipAppendFinished?.(value=>{
+      window.dispatchEvent(new CustomEvent("caderno:finish-clip-append",{detail:value}));
+      if(value.note&&activeNoteId.current===value.noteId)dispatch({type:"openNote",note:value.note,noteId:value.noteId});
+    });
+    return()=>{offPrepare?.();offFinish?.();};
+  },[dispatch]);
   const importRef = useRef<HTMLInputElement>(null);
   const [toast, setToastRaw] = useState<string | null>(null);
   const setToast = (message: string | null) => { setToastRaw(message); if (message) dispatch({ type: "log", level: /falha|inválid|indispon|não foi/i.test(message) ? "error" : "info", message }); };
   const [area,setArea]=useState<'notes'|'tasks'|'calendar'|'settings'>('notes');
-  const { appearance, update, reset } = useAppearance();
+  const { appearance, update, reset, saveError } = useAppearance();
+  const background = useBackgroundAsset();
   useEffect(() => {
     const key = (e: KeyboardEvent) => {
       if (e.key !== "\\" || !e.ctrlKey || e.shiftKey) return;
@@ -32,20 +53,20 @@ export function App() {
     window.addEventListener("keydown", key);
     return () => window.removeEventListener("keydown", key);
   }, [appearance.sidebarCollapsed, appearance.listCollapsed, update]);
-  const [jobs, setJobs] = useState<AttachmentJob[]>([]);
+  const {jobs,refreshJobs}=useAttachmentJobs();
   const [seenLogId, setSeenLogId] = useState(0);
-  const refreshJobs = async () => { try { setJobs(await client.listAttachmentJobs()); } catch { /* indexação indisponível */ } };
-  useEffect(() => { void refreshJobs(); const timer = window.setInterval(() => void refreshJobs(), 1200); return () => window.clearInterval(timer); }, []);
   useEffect(() => { if (area === "settings") setSeenLogId(state.log[0]?.id ?? 0); }, [area, state.log]);
   const alerts = jobs.filter((j) => j.status === "error").length + state.log.filter((l) => l.level === "error" && l.id > seenLogId).length;
   const [clipperOpen,setClipperOpen]=useState(false);
   const [templatesOpen,setTemplatesOpen]=useState(false);
   const [paletteOpen,setPaletteOpen]=useState(false),[quickTask,setQuickTask]=useState(false),[quickEvent,setQuickEvent]=useState(false),[tagsOpen,setTagsOpen]=useState(false);
-  const openPalette=async()=>{
+  const [paletteQuery,setPaletteQuery]=useState('');
+  const [creatingNote,setCreatingNote]=useState(false);const creatingNoteRef=useRef(false);
+  const openPalette=async(query='')=>{
     if(document.querySelector('[aria-modal="true"]'))return;
     try{
-      if(area==='notes'&&state.openNote)await new Promise<void>((resolve,reject)=>window.dispatchEvent(new CustomEvent('caderno:flush-editor',{detail:{resolve,reject}})));
-      setPaletteOpen(true);
+      if(area==='notes'&&state.openNote&&document.querySelector('.tiptap'))await new Promise<void>((resolve,reject)=>window.dispatchEvent(new CustomEvent('caderno:flush-editor',{detail:{resolve,reject}})));
+      setPaletteQuery(query.slice(0,200));setPaletteOpen(true);
     }catch(e){setToast(`Falha ao salvar a nota: ${(e as Error).message}`)}
   };
   useEffect(()=>{const key=(e:KeyboardEvent)=>{if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k'){e.preventDefault();void openPalette()}};const error=(e:Event)=>setToast((e as CustomEvent<string>).detail);window.addEventListener('keydown',key);window.addEventListener('caderno:command-error',error);return()=>{window.removeEventListener('keydown',key);window.removeEventListener('caderno:command-error',error)}},[area,state.openNote]);
@@ -108,8 +129,23 @@ export function App() {
 
   const importEml = async () => {try{const notebookId=state.selection.kind==='notebook'||state.selection.kind==='folder'?state.selection.notebookId:null;const folderId=state.selection.kind==='folder'?state.selection.folderId:undefined;const result=await client.importEml(notebookId, folderId);if(result.canceled)return;setToast(`${result.created} e-mail(s) importado(s), ${result.duplicates} duplicado(s), ${result.attachments} anexo(s).${result.errors.length?` Falhas: ${result.errors.join(' | ')}`:''}`);await refreshMeta();await refreshNotes();}catch(err){setToast(`Falha na importação: ${(err as Error).message}`);}};
 
+  const showHome=async()=>{
+    try{
+      if(document.querySelector('.tiptap'))await new Promise<void>((resolve,reject)=>window.dispatchEvent(new CustomEvent('caderno:flush-editor',{detail:{resolve,reject}})));
+      await openNote(null);dispatch({type:'selection',selection:{kind:'all'}});dispatch({type:'search',value:''});setArea('notes');
+    }catch(error){setToast(`Falha ao salvar a nota: ${(error as Error).message}`);}
+  };
+  const newNoteFromHome=async(resetSelection=false)=>{
+    if(creatingNoteRef.current)return;creatingNoteRef.current=true;setCreatingNote(true);
+    try{if(document.querySelector('.tiptap'))await new Promise<void>((resolve,reject)=>window.dispatchEvent(new CustomEvent('caderno:flush-editor',{detail:{resolve,reject}})));setArea('notes');const selection=state.selection;const note=await client.createNote(selection.kind==='folder'?{notebookId:selection.notebookId,folderId:selection.folderId}:selection.kind==='notebook'?{notebookId:selection.notebookId}:{});dispatch({type:'search',value:''});if(resetSelection||selection.kind==='trash')dispatch({type:'selection',selection:{kind:'all'}});await refreshMeta();await refreshNotes();await openNote(note.id);}
+    catch(error){setToast(`Falha ao criar a nota: ${(error as Error).message}`);}
+    finally{creatingNoteRef.current=false;setCreatingNote(false);}
+  };
+  const home=<Suspense fallback={<AreaLoading/>}><HomeDashboard onSearch={query=>void openPalette(query)} onNewNote={newNoteFromHome} onNavigate={setArea} onOpenNote={async id=>{setArea('notes');await openNote(id);}} onOpenNotebook={id=>{dispatch({type:'selection',selection:{kind:'notebook',notebookId:id}});dispatch({type:'search',value:''});update({listCollapsed:false});}}/></Suspense>;
+
   const commands:PaletteCommand[]=[
-    {id:'create-note',title:'Criar nota',description:'Começar uma nova nota',keywords:'nova escrever',run:async()=>{const sel=state.selection;const note=await client.createNote(sel.kind==='folder'?{notebookId:sel.notebookId,folderId:sel.folderId}:sel.kind==='notebook'?{notebookId:sel.notebookId}:{});dispatch({type:'selection',selection:{kind:'all'}});dispatch({type:'search',value:''});setArea('notes');await refreshMeta();await refreshNotes();await openNote(note.id)}},
+    {id:'home',title:'Abrir início',description:'Pesquisa e widgets da tela inicial',keywords:'home widgets painel',run:showHome},
+    {id:'create-note',title:'Criar nota',description:'Começar uma nova nota',keywords:'nova escrever',run:()=>newNoteFromHome(true)},
     {id:'new-from-template',title:'Nova nota a partir de modelo',description:'Escolher um modelo, ver a prévia e criar uma nota',keywords:'modelos template ata reunião projeto',run:()=>{setArea('notes');setTemplatesOpen(true)}},
     {id:'save-template',title:'Salvar nota como modelo',description:'Guardar o conteúdo atual como modelo reutilizável',keywords:'template',run:()=>{if(!state.openNote||state.openNote.deletedAt!==null)throw new Error('Abra uma nota para salvá-la como modelo.');window.dispatchEvent(new Event('caderno:save-template'))}},
     {id:'reference-note',title:'Abrir nota de referência ao lado',description:'Consultar outra nota somente leitura ao lado da principal',keywords:'lado a lado dividir painel',run:()=>{if(!state.openNote)throw new Error('Abra uma nota principal primeiro.');window.dispatchEvent(new Event('caderno:pick-reference'))}},
@@ -130,8 +166,14 @@ export function App() {
 
   return (
     <div className="app">
+      <WorkspaceBackground appearance={appearance} imageUrl={background.url}/>
+      {window.cadernoDesktop?.windowControls && <div className="window-controls-trigger"><div className="window-controls" role="group" aria-label="Controles da janela">
+        <button aria-label="Minimizar janela" title="Minimizar" onClick={() => window.cadernoDesktop?.windowControls?.minimize()}><Minus size={15} /></button>
+        <button aria-label="Maximizar ou restaurar janela" title="Maximizar ou restaurar" onClick={() => window.cadernoDesktop?.windowControls?.maximize()}><Square size={12} /></button>
+        <button className="window-close" aria-label="Fechar janela" title="Fechar" onClick={() => window.cadernoDesktop?.windowControls?.close()}><X size={15} /></button>
+      </div></div>}
       <Sidebar
-        area={area} onArea={setArea} onCommand={()=>void openPalette()} onTemplates={()=>{setArea('notes');setTemplatesOpen(true)}}
+        area={area} onArea={setArea} onHome={()=>void showHome()} onNewNote={newNoteFromHome} creatingNote={creatingNote} onCommand={()=>void openPalette()} onTemplates={()=>{setArea('notes');setTemplatesOpen(true)}}
         onImportClick={() => importRef.current?.click()}
         onImportEml={() => void importEml()}
         onSaveBackup={() => void saveBackup()}
@@ -140,7 +182,7 @@ export function App() {
         onCollapse={() => update({ sidebarCollapsed: true })}
         onSettings={() => setArea((a) => (a === "settings" ? "notes" : "settings"))} alerts={alerts}
       />
-      {area==='settings'?<SettingsPage appearance={appearance} update={update} reset={reset} jobs={jobs} refreshJobs={refreshJobs} onSaveBackup={() => void saveBackup()} onRestoreBackup={() => void restoreBackup()} onImportClick={() => importRef.current?.click()} onImportEml={() => void importEml()} onClipper={() => setClipperOpen(true)} />:area==='notes'?<><NoteList onCollapse={() => update({ listCollapsed: true })} /><NoteEditor appearance={appearance} onAppearanceChange={update} /></>:<LocalAgenda area={area} openNote={async id=>{setArea('notes');if(id)await openNote(id);}}/>}
+      {area==='settings'?<Suspense fallback={<AreaLoading/>}><SettingsPage appearance={appearance} update={update} reset={reset} background={background} saveError={saveError} jobs={jobs} refreshJobs={refreshJobs} onSaveBackup={() => void saveBackup()} onRestoreBackup={() => void restoreBackup()} onImportClick={() => importRef.current?.click()} onImportEml={() => void importEml()} onClipper={() => setClipperOpen(true)} /></Suspense>:area==='notes'?<><NoteList onCollapse={() => update({ listCollapsed: true })} />{editorStarted.current?<Suspense fallback={<EmptyEditor loading/>}><NoteEditor opening={creatingNote} emptyState={home} appearance={appearance} onAppearanceChange={update} /></Suspense>:home}</>:<Suspense fallback={<AreaLoading/>}><LocalAgenda area={area} openNote={async id=>{setArea('notes');if(id)await openNote(id);}}/></Suspense>}
       <input
         ref={importRef}
         type="file"
@@ -174,7 +216,7 @@ export function App() {
           <button className="ghost" onClick={() => setToast(null)}><X size={13} /></button>
         </div>
       )}
-      {paletteOpen&&<CommandPalette commands={commands} onClose={()=>setPaletteOpen(false)} onNote={async id=>{dispatch({type:"selection",selection:{kind:"all"}});dispatch({type:"search",value:""});setArea("notes");await openNote(id);}}/>}
+      {paletteOpen&&<Suspense fallback={<div className="overlay"><span role="status">Abrindo busca…</span></div>}><CommandPalette initialQuery={paletteQuery} commands={commands} onClose={()=>setPaletteOpen(false)} onNote={async id=>{dispatch({type:"selection",selection:{kind:"all"}});dispatch({type:"search",value:""});setArea("notes");await openNote(id);}}/></Suspense>}
       {quickTask&&<TaskDialog initialNoteId={state.openNote?.deletedAt?null:state.openNoteId} onClose={()=>setQuickTask(false)} onSaved={agendaSaved}/>}
       {quickEvent&&<EventDialog onClose={()=>setQuickEvent(false)} onSaved={agendaSaved}/>}
       {tagsOpen&&<TagManager onClose={()=>setTagsOpen(false)}/>}

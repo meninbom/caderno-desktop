@@ -1,5 +1,7 @@
 # Evolução do Caderno Web Clipper
 
+Implementado em 01/11/2026: revisão no popup, extrator local, favorito, etiquetas, comentário, acréscimo, idempotência por `requestId`, dedupe por URL canônica e seleção por hash. A integração final coordena o acréscimo com o autosave do editor e mantém múltiplas fontes da mesma URL no backup v9. O construtor de `ClipperBridge` aceita uma preparação opcional antes do acréscimo. Não há captura de anexos. Readability, imagens baixadas, menu de contexto e fila offline ficam de fora. O diagnóstico abaixo permanece como registro do código anterior.
+
 Estudo de 30/10/2026. Base: código da extensão, ponte Electron, repositório SQLite e testes existentes. Este documento propõe trabalho; não altera a captura instalada nem afirma validação interativa nova. A implementação de modelos, notas lado a lado e exportação segue em tarefa separada com Sonnet 5.5.
 
 ## Diagnóstico do estado atual

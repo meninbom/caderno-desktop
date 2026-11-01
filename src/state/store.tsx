@@ -10,6 +10,8 @@ import {
   Tag,
 } from "../../shared/ipc";
 import { client } from "../api/client";
+import { shareNoteSnapshot } from "../../shared/note-snapshots";
+import { shareNotebooks } from "../../shared/notebook-customization";
 
 export type Selection =
   | { kind: "all" }
@@ -82,28 +84,42 @@ const initialState: AppState = {
 function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
     case "init":
+      if(state.initialized&&state.theme===action.theme)return state;
       return { ...state, theme: action.theme, initialized: true };
     case "selection":
+      if(!state.search&&JSON.stringify(state.selection)===JSON.stringify(action.selection))return state;
       return { ...state, selection: action.selection, search: "" };
-    case "notes":
-      return { ...state, notes: action.notes };
+    case "notes": {
+      const notes=shareNoteSnapshot(state.notes,action.notes);
+      return notes===state.notes?state:{...state,notes};
+    }
     case "openNote":
       return { ...state, openNote: action.note, openNoteId: action.noteId };
-    case "notebooks":
-      return { ...state, notebooks: action.notebooks };
+    case "notebooks": {
+      // Mantém a identidade dos cadernos inalterados: salvar um ícone não re-renderiza a árvore toda.
+      const notebooks=shareNotebooks(state.notebooks,action.notebooks) as Notebook[];
+      return notebooks===state.notebooks?state:{ ...state, notebooks };
+    }
     case "folders":
+      if(JSON.stringify(state.folders)===JSON.stringify(action.folders))return state;
       return { ...state, folders: action.folders };
     case "tags":
+      if(JSON.stringify(state.tags)===JSON.stringify(action.tags))return state;
       return { ...state, tags: action.tags };
     case "counts":
+      if(JSON.stringify(state.counts)===JSON.stringify(action.counts))return state;
       return { ...state, counts: action.counts };
     case "theme":
+      if(state.theme===action.theme)return state;
       return { ...state, theme: action.theme };
     case "order":
+      if(state.orderBy===action.order)return state;
       return { ...state, orderBy: action.order };
     case "search":
+      if(state.search===action.value)return state;
       return { ...state, search: action.value };
     case "saveState":
+      if(state.saveState===action.state&&(action.state!=="saved"||action.at===state.lastSavedAt))return state;
       return { ...state, saveState: action.state, lastSavedAt: action.state === "saved" ? (action.at ?? Date.now()) : state.lastSavedAt };
     case "error":
       return { ...state, error: action.message, log: action.message ? appendLog(state.log, "error", action.message) : state.log };
@@ -154,9 +170,14 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   stateRef.current = state;
   const refreshMetaRef = useRef<() => Promise<void>>(async () => {});
   const refreshNotesRef = useRef<() => Promise<void>>(async () => {});
+  const metaRequest=useRef<Promise<void>|null>(null);
+  const notesRequest=useRef<{key:string;promise:Promise<void>}|null>(null);
+  const notesSequence=useRef(0);
+  const openSequence=useRef(0);
 
   refreshMetaRef.current = async () => {
-    try {
+    if(metaRequest.current)return metaRequest.current;
+    const request=(async()=>{try {
       const [notebooks, tags, counts, folders] = await Promise.all([
         client.listNotebooks(),
         client.listTags(),
@@ -169,16 +190,23 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       dispatch({ type: "counts", counts });
     } catch (err) {
       dispatch({ type: "error", message: `${(err as Error).message}` });
-    }
+    }})();
+    metaRequest.current=request;
+    try{await request;}finally{if(metaRequest.current===request)metaRequest.current=null;}
   };
 
   refreshNotesRef.current = async () => {
-    try {
-      const notes = await client.listNotes(selectionToQuery(stateRef.current));
-      dispatch({ type: "notes", notes });
+    const query=selectionToQuery(stateRef.current),key=JSON.stringify(query);
+    if(notesRequest.current?.key===key)return notesRequest.current.promise;
+    const sequence=++notesSequence.current;
+    const request=(async()=>{try {
+      const notes = await client.listNotes(query);
+      if(sequence===notesSequence.current&&key===JSON.stringify(selectionToQuery(stateRef.current)))dispatch({ type: "notes", notes });
     } catch (err) {
-      dispatch({ type: "error", message: `${(err as Error).message}` });
-    }
+      if(sequence===notesSequence.current)dispatch({ type: "error", message: `${(err as Error).message}` });
+    }})();
+    notesRequest.current={key,promise:request};
+    try{await request;}finally{if(notesRequest.current?.promise===request)notesRequest.current=null;}
   };
 
   const refreshNotes = useCallback(() => refreshNotesRef.current(), []);
@@ -207,7 +235,9 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
   }, [state.initialized]);
 
   useEffect(() => {
-    if (state.initialized) void refreshNotesRef.current();
+    if(!state.initialized)return;
+    const timer=window.setTimeout(()=>void refreshNotesRef.current(),state.search.trim()?100:0);
+    return()=>window.clearTimeout(timer);
   }, [state.selection, state.orderBy, state.search, state.initialized]);
 
   useEffect(() => {
@@ -219,11 +249,13 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
 
   const apiActions = useMemo(() => ({
     openNote: async (id: string | null) => {
+      const sequence=++openSequence.current;
       if (id === null) {
         dispatch({ type: "openNote", note: null, noteId: null });
         return;
       }
       const note = await client.getNote(id);
+      if(sequence!==openSequence.current)return;
       dispatch({ type: "openNote", note, noteId: id });
     },
     saveNoteContent: async (id: string, patch: { title?: string; contentHtml?: string }): Promise<boolean> => {
@@ -231,6 +263,7 @@ export function AppStoreProvider({ children }: { children: React.ReactNode }) {
       try {
         const updated = await client.updateNote(id, patch);
         if (updated) {
+          notesRequest.current=null;notesSequence.current++;
           dispatch({ type: "saveState", state: "saved", at: Date.now() });
           if (stateRef.current.openNoteId === id) {
             dispatch({ type: "openNote", note: updated as NoteFull, noteId: id });

@@ -1,8 +1,19 @@
-import React, { useMemo, useEffect, useRef, useState } from "react";
+import React, {useCallback,useMemo,useEffect,useRef,useState} from "react";
 import { Star, Pin, StickyNote, Search, SlidersHorizontal, ChevronDown, X, PanelRightClose } from "lucide-react";
 import { useAppStore } from "../state/store";
 import { client } from "../api/client";
 import { beginSidebarDrag, endSidebarDrag } from "./sidebarDrag";
+import {useVirtualRows} from "../hooks/useVirtualRows";
+import {NoteRow} from "./NoteRow";
+
+function waitForEditor(noteId:string):Promise<boolean>{
+  return new Promise(resolve=>{
+    const ready=()=>{if(document.querySelector(`.editor-pane[data-editor-ready="${noteId}"]`)){finish(true);}};
+    const finish=(ok:boolean)=>{clearTimeout(timer);window.removeEventListener("caderno:editor-ready",ready);resolve(ok);};
+    const timer=window.setTimeout(()=>finish(false),5000);
+    window.addEventListener("caderno:editor-ready",ready);ready();
+  });
+}
 
 function fmtDate(ts: number): string {
   const d = new Date(ts);
@@ -44,6 +55,8 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [draggingNoteId, setDraggingNoteId] = useState<string | null>(null);
   const dragClick = useRef(false);
+  const virtual=useVirtualRows(state.notes,JSON.stringify([state.selection,state.search,state.orderBy]));
+  const folderNames=useMemo(()=>new Map(state.folders.map(folder=>[folder.id,folder.name])),[state.folders]);
   const activeFilters = FILTER_KEYS.map(key => ({ key, value: filterValue(key) })).filter(f => f.value);
   const clearFilters = () => {
     const tokens = (state.search.match(/(?:[^\s"]+|"(?:\\.|[^"])*")+/g) ?? []).filter(t => !/^(notebook|tag|before|after|type):/i.test(t));
@@ -79,6 +92,7 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
   const openResult=async(n:typeof state.notes[number])=>{
     await openNote(n.id);
     if(!n.matchSource)return;
+    if(!await waitForEditor(n.id))return;
     if(n.matchSourceKind==="transcription"){
       const attachment=(await client.listAttachments(n.id)).find(a=>a.fileName===n.matchSource);
       if(attachment)window.setTimeout(()=>window.dispatchEvent(new CustomEvent("caderno:open-transcription",{detail:{noteId:n.id,attachmentId:attachment.id}})),0);
@@ -89,14 +103,19 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
       window.setTimeout(()=>window.dispatchEvent(new CustomEvent("caderno:preview-attachment",{detail:{noteId:n.id,attachmentId:attachment.id}})),0);
   };
 
+  const actions=useRef({openResult,toggleFavorite});actions.current={openResult,toggleFavorite};
+  const openRow=useCallback((note:typeof state.notes[number])=>{if(dragClick.current){dragClick.current=false;return;}void actions.current.openResult(note);},[]);
+  const favoriteRow=useCallback((note:typeof state.notes[number])=>{void actions.current.toggleFavorite(note.id,note.favorited);},[]);
+  const startRowDrag=useCallback((note:typeof state.notes[number],event:React.DragEvent<HTMLButtonElement>)=>{if(note.deletedAt){event.preventDefault();return;}dragClick.current=true;beginSidebarDrag({kind:"note",id:note.id,notebookId:note.notebookId,folderId:note.folderId},event.dataTransfer);setDraggingNoteId(note.id);event.currentTarget.classList.add("is-dragging");},[]);
+  const endRowDrag=useCallback((event:React.DragEvent<HTMLButtonElement>)=>{event.currentTarget.classList.remove("is-dragging");setDraggingNoteId(null);endSidebarDrag();window.setTimeout(()=>{dragClick.current=false;},80);},[]);
   return (
     <section className="notelist" aria-label="Lista de notas">
       <div className="notelist-header">
         <div className="title">
           <span className="notelist-title-text">{headerTitle}</span>
           <span className="count">{state.notes.length}</span>
-          {onCollapse && <button className="pane-collapse" title="Recolher lista de notas (Ctrl+Alt+\)" aria-label="Recolher lista de notas" onClick={onCollapse}><PanelRightClose size={14} /></button>}
         </div>
+        {onCollapse && <button className="pane-collapse notelist-collapse" title="Recolher lista de notas (Ctrl+Alt+\)" aria-label="Recolher lista de notas" onClick={onCollapse}><PanelRightClose size={14} /></button>}
         {selectionKey !== "trash" ? (
           <div className="notelist-actions">
             <select
@@ -209,7 +228,7 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
         </div>
       </div>
 
-      <div className="notes-scroll">
+      <div className="notes-scroll" ref={virtual.scrollRef}>
         {state.notes.length === 0 ? (
           <div className="empty-state">
             <StickyNote size={20} strokeWidth={1.6} />
@@ -224,55 +243,8 @@ export function NoteList({ onCollapse }: { onCollapse?: () => void } = {}) {
             </span>
           </div>
         ) : (
-          <div className="note-list-col">
-            {state.notes.map((n) => (
-              <button
-                key={n.id}
-                className={`note-row ${state.openNoteId === n.id ? "selected" : ""} ${draggingNoteId === n.id ? "is-dragging" : ""}`}
-                draggable={selectionKey !== "trash" && !n.deletedAt}
-                onDragStart={(event) => {
-                  if (selectionKey === "trash" || n.deletedAt) { event.preventDefault(); return; }
-                  dragClick.current = true;
-                  beginSidebarDrag({ kind: "note", id: n.id, notebookId: n.notebookId, folderId: n.folderId }, event.dataTransfer);
-                  setDraggingNoteId(n.id);
-                  event.currentTarget.classList.add("is-dragging");
-                }}
-                onDragEnd={(event) => {
-                  event.currentTarget.classList.remove("is-dragging");
-                  setDraggingNoteId(null);
-                  endSidebarDrag();
-                  window.setTimeout(() => { dragClick.current = false; }, 80);
-                }}
-                onClick={() => { if (dragClick.current) { dragClick.current = false; return; } void openResult(n); }}
-              >
-                <span className="row-title">
-                  <span className="tt">{n.title ? n.title : <em style={{ color: "var(--text-faint)", fontWeight: 400 }}>Sem título</em>}</span>
-                  <span className="mark">
-                    {n.pinned === true && <span className="pinned" title="Fixada"><Pin size={11} /></span>}
-                    {n.deletedAt && <span title="Na lixeira">🗑</span>}
-                  </span>
-                </span>
-                {n.matchSource&&<span className="row-meta">Anexo: {n.matchSource}</span>}
-                {(n.matchSnippet||n.preview) && <span className="row-preview">{n.matchSnippet||n.preview}</span>}
-                <span className="row-meta">
-                  <span>{fmtDate(n.updatedAt)}</span>
-                  {n.folderId && state.selection.kind !== "folder" && <span className="meta-tag">{state.folders.find(folder => folder.id === n.folderId)?.name}</span>}
-                  {n.tags.length > 0 && (
-                    <span className="meta-tags">
-                      {n.tags.slice(0, 3).map((t) => (
-                        <span key={`chip-${n.id}-${t.id}`} className="meta-tag" style={t.color ? { "--tag-color": t.color } as React.CSSProperties : undefined}>{t.name}</span>
-                      ))}
-                      {n.tags.length > 3 && <span className="meta-tag meta-tag-overflow" title={n.tags.slice(3).map(tag => tag.name).join(", ")}>+{n.tags.length - 3}</span>}
-                    </span>
-                  )}
-                  {n.favorited && (
-                    <span className="fav" onClick={(e) => { e.stopPropagation(); void toggleFavorite(n.id, n.favorited); }} title="Remover favorito">
-                      <Star size={11} fill="currentColor" />
-                    </span>
-                  )}
-                </span>
-              </button>
-            ))}
+          <div className="note-list-col" style={{paddingTop:virtual.paddingTop,paddingBottom:virtual.paddingBottom}}>
+            {state.notes.slice(virtual.start,virtual.end).map(n=><NoteRow key={n.id} note={n} selected={state.openNoteId===n.id} dragging={draggingNoteId===n.id} inTrash={selectionKey==="trash"} folderName={selectionKey!=="folder"&&n.folderId?folderNames.get(n.folderId):undefined} onOpen={openRow} onFavorite={favoriteRow} onDragStart={startRowDrag} onDragEnd={endRowDrag} measure={virtual.measureRef(n.id)}/>)}
           </div>
         )}
       </div>

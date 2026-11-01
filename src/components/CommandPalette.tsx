@@ -11,8 +11,8 @@ function Excerpt({text,query}:{text:string;query:string}){
   const index=query?fold(text).indexOf(fold(query)):-1;
   return index<0?<>{text}</>:<>{text.slice(0,index)}<mark>{text.slice(index,index+query.length)}</mark>{text.slice(index+query.length)}</>;
 }
-export function CommandPalette({commands,onClose,onNote}:{commands:PaletteCommand[];onClose:()=>void;onNote:(id:string)=>void|Promise<void>}){
-  const [query,setQuery]=useState(''),[tab,setTab]=useState<'all'|'notes'|'commands'>('all'),[notes,setNotes]=useState<NoteMeta[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[active,setActive]=useState(0);
+export function CommandPalette({commands,onClose,onNote,initialQuery=''}:{commands:PaletteCommand[];onClose:()=>void;onNote:(id:string)=>void|Promise<void>;initialQuery?:string}){
+  const [query,setQuery]=useState(()=>initialQuery.slice(0,200)),[tab,setTab]=useState<'all'|'notes'|'commands'>('all'),[notes,setNotes]=useState<NoteMeta[]>([]),[loading,setLoading]=useState(true),[error,setError]=useState(''),[active,setActive]=useState(0);
   const root=useDialogFocus(true,onClose),list=useRef<HTMLDivElement>(null);
   const searchInput=useRef<HTMLInputElement>(null);
   useLayoutEffect(()=>{
@@ -36,7 +36,7 @@ export function CommandPalette({commands,onClose,onNote}:{commands:PaletteComman
   const term=query.replace(/^>/,'').trim(),commandsOnly=tab==='commands'||query.startsWith('>');
   const matching=tab==='notes'?[]:commands.filter(c=>!term||fold(`${c.title} ${c.description} ${c.keywords??''}`).includes(fold(term)));
   const rows=[...matching.map(command=>({id:command.id,title:command.title,detail:command.description,kind:'command' as const,run:command.run})),...(!commandsOnly?notes:[]).map(note=>({id:note.id,title:note.title||'Sem título',detail:`${note.matchSource?`${note.matchSource} · `:''}${note.matchSnippet||note.preview||'Nota sem conteúdo'}`,kind:'note' as const,run:()=>onNote(note.id)}))];
-  useEffect(()=>{let alive=true;setActive(0);setError('');setNotes([]);if(commandsOnly){setLoading(false);return;}setLoading(true);const timer=setTimeout(()=>{const request=term?client.searchNotes(term,50):client.listNotes({view:'all'}).then(n=>n.slice(0,8));request.then(value=>{if(alive)setNotes(value)}).catch(e=>{if(alive)setError(e.message)}).finally(()=>{if(alive)setLoading(false)});},term?180:0);return()=>{alive=false;clearTimeout(timer)}},[term,commandsOnly]);
+  useEffect(()=>{let alive=true;setActive(0);setError('');setNotes([]);if(commandsOnly){setLoading(false);return;}setLoading(true);const timer=setTimeout(()=>{const request=client.searchNotes(term,term?50:8);request.then(value=>{if(alive)setNotes(value)}).catch(e=>{if(alive)setError(e.message)}).finally(()=>{if(alive)setLoading(false)});},term?120:0);return()=>{alive=false;clearTimeout(timer)}},[term,commandsOnly]);
   useEffect(()=>setActive(0),[tab]);
   useEffect(()=>{list.current?.querySelector(`[data-result-index="${active}"]`)?.scrollIntoView({block:'nearest'})},[active]);
   const choose=(run:()=>void|Promise<void>)=>{onClose();requestAnimationFrame(()=>{void Promise.resolve().then(run).catch(e=>window.dispatchEvent(new CustomEvent('caderno:command-error',{detail:e.message})))});};

@@ -1,36 +1,55 @@
-import React,{useEffect,useMemo,useRef,useState} from 'react';
-import { Check, ChevronDown, Clock3, Repeat2, Search, Trash2, CalendarDays, ExternalLink } from 'lucide-react';
-import { filterTasks, groupTasks, type TaskGroupKey, type TaskStatusFilter } from '../../shared/task-view';
-import {CalendarEvent,Task} from '../../shared/ipc';import {client} from '../api/client';
-import {formatInZone,localDateTimeInZone} from '../../shared/zoned-time';
-import {EventDialog,EventDraft,TaskDialog,TaskDraft} from './AgendaDialogs';
-const sameDay=(a:Date,b:Date)=>a.getFullYear()===b.getFullYear()&&a.getMonth()===b.getMonth()&&a.getDate()===b.getDate();
-const dayKey=(d:Date)=>`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-export function LocalAgenda({area,openNote}:{area:'tasks'|'calendar';openNote:(id:string|null)=>Promise<void>}){
- const [filter,setFilter]=useState<'today'|'upcoming'|'overdue'|'completed'|'all'>('today'),[tasks,setTasks]=useState<Task[]>([]),[events,setEvents]=useState<CalendarEvent[]>([]),[anchor,setAnchor]=useState(new Date()),[mode,setMode]=useState<'month'|'week'>('month'),[error,setError]=useState(''),[taskDraft,setTaskDraft]=useState<TaskDraft|null>(null),[eventDraft,setEventDraft]=useState<EventDraft|null|undefined>(undefined),[selected,setSelected]=useState(new Date());
- const [priority,setPriority]=useState<'all'|'low'|'normal'|'high'>('all'),[status,setStatus]=useState<TaskStatusFilter>('pending'),[query,setQuery]=useState(''),[quickTitle,setQuickTitle]=useState(''),[completedOpen,setCompletedOpen]=useState(false);
- const visibleTasks=useMemo(()=>filterTasks(tasks,{status,priority,query}),[tasks,status,priority,query]);
- const groups=useMemo(()=>groupTasks(visibleTasks),[visibleTasks]);
- const counts=useMemo(()=>({pending:tasks.filter(t=>!t.done).length,overdue:tasks.filter(t=>!t.done&&t.dueAt!==null&&t.dueAt<new Date().setHours(0,0,0,0)).length,completedToday:tasks.filter(t=>t.done&&new Date(t.updatedAt).toDateString()===new Date().toDateString()).length}),[tasks]);
- const taskOpener=useRef<HTMLElement|null>(null),eventOpener=useRef<HTMLElement|null>(null);const closeTask=()=>{setTaskDraft(null);requestAnimationFrame(()=>taskOpener.current?.focus())},closeEvent=()=>{setEventDraft(undefined);requestAnimationFrame(()=>eventOpener.current?.focus())};
- const startOfWeek=(d:Date)=>{const x=new Date(d);x.setDate(x.getDate()-((x.getDay()+6)%7));x.setHours(0,0,0,0);return x};
- const range=()=>{if(mode==='week'){const s=startOfWeek(anchor),e=new Date(s);e.setDate(e.getDate()+7);return [s.getTime(),e.getTime()-1] as const}const s=new Date(anchor.getFullYear(),anchor.getMonth(),1),e=new Date(anchor.getFullYear(),anchor.getMonth()+1,1);return [s.getTime(),e.getTime()-1] as const};
- const refresh=async()=>{try{setError('');if(area==='tasks')setTasks(await client.listTasks('all','all'));else{const [s,e]=range();setEvents(await client.listEvents(s,e))}}catch(e){setError((e as Error).message)}};
- useEffect(()=>{void refresh()},[area,filter,priority,anchor,mode]);
- useEffect(()=>{const changed=()=>void refresh();window.addEventListener('caderno:agenda-changed',changed);return()=>window.removeEventListener('caderno:agenda-changed',changed)},[area,filter,priority,anchor,mode]);
- const navigate=(delta:number)=>setAnchor(d=>{const n=new Date(d);if(mode==='week')n.setDate(n.getDate()+delta*7);else n.setMonth(n.getMonth()+delta,1);return n});
- const calendarDays=useMemo(()=>{if(mode==='week'){const s=startOfWeek(anchor);return Array.from({length:7},(_,i)=>{const d=new Date(s);d.setDate(d.getDate()+i);return d})}const first=new Date(anchor.getFullYear(),anchor.getMonth(),1);first.setDate(first.getDate()-((first.getDay()+6)%7));return Array.from({length:42},(_,i)=>{const d=new Date(first);d.setDate(first.getDate()+i);return d})},[anchor,mode]);
- const eventsOn=(d:Date)=>events.filter(ev=>{const x=new Date(ev.startAt),y=new Date(ev.endAt);return dayKey(d)>=dayKey(x)&&dayKey(d)<=dayKey(y)});
- const createAtDay=(d:Date)=>{setSelected(d);const when=new Date(d);when.setHours(9,0,0,0);const end=new Date(when);end.setHours(10);const zone=Intl.DateTimeFormat().resolvedOptions().timeZone;eventOpener.current=document.activeElement as HTMLElement;setEventDraft({noteId:null,title:'',description:'',startAt:when.getTime(),endAt:end.getTime(),timeZone:zone,allDay:false})};
- const editEvent=(ev:CalendarEvent)=>setEventDraft({id:ev.id,noteId:ev.noteId,title:ev.title,description:ev.description,startAt:ev.startAt,endAt:ev.endAt,timeZone:ev.timeZone,allDay:ev.allDay});
- const taskInitial=(t:Task):TaskDraft=>({id:t.id,noteId:t.noteId,title:t.title,dueAt:t.dueAt,reminderAt:t.reminderAt,recurrence:t.recurrence,priority:t.priority,timeZone:t.timeZone});
- return <main className="agenda"><header><div><h1>{area==='tasks'?'Tarefas':'Calendário'}</h1><p>{area==='tasks'?'Lembretes ativos enquanto o app estiver aberto':'Dados locais neste dispositivo'} · fuso {Intl.DateTimeFormat().resolvedOptions().timeZone}</p></div><div className="agenda-actions"><button onClick={()=>{const d=new Date();setAnchor(d);setSelected(d)}}>Hoje</button><button aria-label="Anterior" onClick={()=>navigate(-1)}>‹</button><button aria-label="Próximo" onClick={()=>navigate(1)}>›</button>{area==='tasks'?<button className="primary" onClick={e=>{taskOpener.current=e.currentTarget;setTaskDraft({noteId:'',title:'',dueAt:null,reminderAt:null})}}>Nova tarefa</button>:<><select aria-label="Modo de calendário" value={mode} onChange={e=>setMode(e.target.value as 'month'|'week')}><option value="month">Mês</option><option value="week">Semana</option></select><button className="primary" onClick={e=>{eventOpener.current=e.currentTarget;createAtDay(selected)}}>Novo evento</button></>}</div></header>
- {error&&<p role="alert" className="agenda-error">{error}</p>}
- {area==='tasks'?<section className="tasks-page">
-   <div className="tasks-summary"><span><strong>{counts.pending}</strong> pendentes</span><span><strong>{counts.overdue}</strong> atrasadas</span><span><strong>{counts.completedToday}</strong> concluídas hoje</span></div>
-   <form className="task-quick-add" onSubmit={e=>{e.preventDefault();if(!quickTitle.trim())return;taskOpener.current=document.activeElement as HTMLElement;setTaskDraft({noteId:'',title:quickTitle.trim(),dueAt:null,reminderAt:null});setQuickTitle('')}}><input aria-label="Adicionar tarefa rapidamente" placeholder="Adicionar uma tarefa…" value={quickTitle} onChange={e=>setQuickTitle(e.target.value)}/><button className="primary" type="submit">Adicionar</button></form>
-   <div className="task-toolbar"><label className="task-search"><Search size={15}/><input aria-label="Buscar tarefas" placeholder="Buscar tarefas ou notas" value={query} onChange={e=>setQuery(e.target.value)}/></label><select aria-label="Status das tarefas" value={status} onChange={e=>setStatus(e.target.value as TaskStatusFilter)}><option value="pending">Pendentes</option><option value="completed">Concluídas</option><option value="all">Todas</option></select><select aria-label="Filtrar prioridade" value={priority} onChange={e=>setPriority(e.target.value as typeof priority)}><option value="all">Todas as prioridades</option><option value="high">Alta</option><option value="normal">Normal</option><option value="low">Baixa</option></select></div>
-   <div className="task-groups">{([['overdue','Atrasadas','A tarefa vencida precisa de atenção.'],['today','Hoje','Sem tarefas para hoje.'],['next','Próximas','Nenhuma tarefa nos próximos sete dias.'],['later','Mais tarde','Nenhuma tarefa com prazo posterior.'],['undated','Sem data','Todas as tarefas têm prazo.'],['completed','Concluídas','Nenhuma tarefa concluída com estes filtros.']] as [TaskGroupKey,string,string][]).map(([key,title,empty])=>{const items=groups[key];return <section className={`task-group ${key}`} key={key}><button className="task-group-heading" aria-expanded={key!=='completed'||completedOpen} onClick={()=>{if(key==='completed')setCompletedOpen(v=>!v)}}><span>{key==='completed'&&<ChevronDown size={15} className={completedOpen?'open':''}/>}<strong>{title}</strong><small>{items.length}</small></span></button>{(key!=='completed'||completedOpen)&&(items.length?<div className="task-rows">{items.map(t=><article className={`task-row ${t.done?'is-done':''}`} key={t.id}><label className="task-check-wrap"><input aria-label={t.done?`Reabrir ${t.title}`:`Concluir ${t.title}`} type="checkbox" checked={t.done} onChange={async e=>{try{await client.updateTask({id:t.id,done:e.target.checked});await refresh()}catch(err){setError((err as Error).message)}}}/><span className="task-check"><Check size={13}/></span></label><div className="task-copy"><div className="task-title-line"><strong>{t.title}</strong><span className={`task-priority-dot ${t.priority??'normal'}`} title={`Prioridade ${({high:'alta',normal:'normal',low:'baixa'})[t.priority??'normal']}`}/></div><div className="task-meta">{t.dueAt&&<span className={`task-date-chip ${!t.done&&t.dueAt<new Date().setHours(0,0,0,0)?'overdue':''}`}><Clock3 size={12}/>{new Date(t.dueAt).toLocaleDateString('pt-BR',{day:'2-digit',month:'short'})}</span>}{t.recurrence&&t.recurrence!=='none'&&<span className="task-repeat"><Repeat2 size={12}/>{({daily:'Diária',weekly:'Semanal',monthly:'Mensal'})[t.recurrence]}</span>}<button className="task-origin" onClick={()=>void openNote(t.noteId).catch(e=>setError(e.message))}>{t.noteTitle}<ExternalLink size={11}/></button></div></div><div className="task-row-actions"><button aria-label={`Editar prazo e recorrência de ${t.title}`} title="Editar prazo" onClick={()=>setTaskDraft(taskInitial(t))}><CalendarDays size={15}/></button><select aria-label={`Prioridade de ${t.title}`} value={t.priority??'normal'} onChange={async e=>{try{await client.updateTask({id:t.id,priority:e.target.value as 'low'|'normal'|'high'});await refresh()}catch(err){setError((err as Error).message)}}}><option value="low">Baixa</option><option value="normal">Normal</option><option value="high">Alta</option></select><button aria-label={`Excluir ${t.title}`} title="Excluir tarefa" onClick={async()=>{try{await client.deleteTask(t.id);await refresh()}catch(e){setError((e as Error).message)}}}><Trash2 size={15}/></button></div></article>)}</div>:<p className="task-empty">{empty}</p>)}</section>})}</div>
-  </section>:<><h2>{mode==='month'?anchor.toLocaleDateString(undefined,{month:'long',year:'numeric'}):`${calendarDays[0].toLocaleDateString()} – ${calendarDays[6].toLocaleDateString()}`}</h2><div className={`calendar-grid ${mode}`} role="grid" aria-label={mode==='month'?'Calendário mensal':'Agenda semanal'}>{['Seg','Ter','Qua','Qui','Sex','Sáb','Dom'].map(d=><div className="calendar-weekday" role="columnheader" key={d}>{d}</div>)}{calendarDays.map(d=><button role="gridcell" aria-label={`${d.toLocaleDateString()}${eventsOn(d).length?`, ${eventsOn(d).length} eventos`:''}`} aria-selected={sameDay(d,selected)} key={dayKey(d)} className={`calendar-day ${sameDay(d,new Date())?'today':''} ${mode==='month'&&d.getMonth()!==anchor.getMonth()?'outside':''}`} onClick={()=>{setSelected(d);if(mode==='week')createAtDay(d)}} onDoubleClick={()=>createAtDay(d)}><span>{d.getDate()}</span>{eventsOn(d).slice(0,3).map(ev=><span key={ev.id} className="calendar-event" onClick={e=>{e.stopPropagation();editEvent(ev)}}>{ev.title}</span>)}{eventsOn(d).length>3&&<small>+{eventsOn(d).length-3}</small>}</button>)}</div><h3>Eventos no período</h3><div className="agenda-list">{events.map(ev=><article key={ev.id}><div className="agenda-item"><strong>{ev.title}{ev.allDay?' · Dia inteiro':''}</strong><small>{formatInZone(ev.startAt,ev.timeZone)} – {formatInZone(ev.endAt,ev.timeZone)} · {ev.timeZone}{ev.noteTitle?` · ${ev.noteTitle}`:''}</small></div>{ev.noteId&&<button onClick={()=>void openNote(ev.noteId).catch(e=>setError(e.message))}>Abrir nota</button>}<button onClick={()=>editEvent(ev)}>Editar</button><button onClick={async()=>{try{await client.deleteEvent(ev.id);await refresh()}catch(e){setError((e as Error).message)}}}>Excluir</button></article>)}</div></>}
- {taskDraft&&<TaskDialog initial={taskDraft.id?taskDraft:undefined} initialNoteId={taskDraft.noteId||null} onClose={closeTask} onSaved={()=>{closeTask();void refresh()}}/>}{eventDraft!==undefined&&<EventDialog initial={eventDraft??undefined} onClose={closeEvent} onSaved={()=>{closeEvent();void refresh()}}/>}</main>
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AGENDA_CHANGED } from './useAgenda';
+import { EventDialog, TaskDialog, type EventDraft, type TaskDraft } from './AgendaDialogs';
+import { eventToDraft, localZone, taskToDraft, type AgendaHost } from './AgendaParts';
+import { TasksView } from './TasksView';
+import { CalendarView } from './CalendarView';
+
+const TOAST_MS = 7000;
+type Toast = { id: number; message: string; undo?: () => Promise<void> };
+
+export function LocalAgenda({ area, openNote }: { area: 'tasks' | 'calendar'; openNote: (id: string | null) => Promise<void> }) {
+  const [error, setError] = useState('');
+  const [taskDraft, setTaskDraft] = useState<TaskDraft | null>(null);
+  const [eventDraft, setEventDraft] = useState<EventDraft | null>(null);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const opener = useRef<HTMLElement | null>(null), taskSaved = useRef<(() => void) | undefined>(undefined), openNoteRef = useRef(openNote), toastTimer = useRef(0), toastId = useRef(0);
+  openNoteRef.current = openNote;
+
+  const host = useMemo<AgendaHost>(() => ({
+    openNote: id => openNoteRef.current(id),
+    report: setError,
+    toast(message, undo) {
+      window.clearTimeout(toastTimer.current);
+      setToast({ id: ++toastId.current, message, undo });
+      toastTimer.current = window.setTimeout(() => setToast(null), TOAST_MS);
+    },
+    createTask(draft, options) { opener.current = options?.opener ?? (document.activeElement as HTMLElement | null); taskSaved.current = options?.saved; setTaskDraft(draft); },
+    editTask(task, from) { opener.current = from ?? (document.activeElement as HTMLElement | null); taskSaved.current = undefined; setTaskDraft(taskToDraft(task)); },
+    createEvent(day, from) {
+      opener.current = from ?? (document.activeElement as HTMLElement | null);
+      const start = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 9), end = new Date(day.getFullYear(), day.getMonth(), day.getDate(), 10);
+      setEventDraft({ noteId: null, title: '', description: '', startAt: start.getTime(), endAt: end.getTime(), timeZone: localZone(), allDay: false });
+    },
+    editEvent(event, from) { opener.current = from ?? (document.activeElement as HTMLElement | null); setEventDraft(eventToDraft(event)); },
+  }), []);
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+  useEffect(() => setError(''), [area]);
+
+  const restoreFocus = () => requestAnimationFrame(() => { if (opener.current?.isConnected) opener.current.focus(); });
+  const closeTask = () => { setTaskDraft(null); taskSaved.current = undefined; restoreFocus(); };
+  const closeEvent = () => { setEventDraft(null); restoreFocus(); };
+  const changed = () => window.dispatchEvent(new Event(AGENDA_CHANGED));
+  const undo = useCallback(async () => {
+    const action = toast?.undo;
+    setToast(null);
+    try { await action?.(); } catch (failure) { setError((failure as Error).message); }
+  }, [toast]);
+
+  return <main className="agenda" data-area={area}>
+    {area === 'tasks' ? <TasksView host={host} error={error}/> : <CalendarView host={host} error={error}/>}
+    {taskDraft && <TaskDialog initial={taskDraft} onClose={closeTask} onSaved={() => { const done = taskSaved.current; closeTask(); done?.(); changed(); }}/>}
+    {eventDraft && <EventDialog initial={eventDraft} onClose={closeEvent} onSaved={() => { closeEvent(); changed(); }}/>}
+    {toast && <div className="agenda-toast" role="status" key={toast.id}><span>{toast.message}</span>{toast.undo && <button onClick={() => void undo()}>Desfazer</button>}<button className="agenda-toast-close" aria-label="Fechar aviso" onClick={() => setToast(null)}>×</button></div>}
+  </main>;
 }

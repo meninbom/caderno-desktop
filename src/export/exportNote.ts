@@ -1,13 +1,14 @@
-import { getDocument, GlobalWorkerOptions } from "pdfjs-dist";
 import workerUrl from "pdfjs-dist/build/pdf.worker.min.mjs?url";
-import { EXPORT_LIMITS, type ExportFinishResult } from "../../shared/ipc";
+import type {ExportFinishResult} from "../../shared/ipc";
+import {EXPORT_LIMITS} from "../../shared/export-limits";
 import { client } from "../api/client";
-GlobalWorkerOptions.workerSrc = workerUrl;
 
 type Render = { storedName: string; totalPages: number; pages: { page: number; width: number; height: number; dataUrl: string }[]; error?: string };
 
 /** Renderiza TODAS as páginas (até o limite) de um anexo PDF para JPEG; o arquivo original nunca é alterado. */
 async function renderPdf(storedName: string, budget: { pages: number; chars: number }): Promise<Render> {
+  const {getDocument,GlobalWorkerOptions}=await import("pdfjs-dist");
+  GlobalWorkerOptions.workerSrc=workerUrl;
   const task = getDocument({ url: `caderno-asset://${storedName}`, disableAutoFetch: false });
   try {
     const doc = await task.promise;

@@ -3,12 +3,16 @@ import { AppMeta } from "./api";
 
 /** Contexto do renderer: preload expõe esta ponte mínima e tipada. */
 export interface RendererBridge {
+  windowControls?: { minimize(): void; maximize(): void; close(): void };
   onClipperCapture?(listener:()=>void):()=>void;
   onExternalDataChange?(listener:()=>void):()=>void;
   onOpenNote?(listener:(noteId:string)=>void):()=>void;
   invoke(channel: string, input: unknown): Promise<{ ok: true; data: unknown } | { ok: false; error: string }>;
   onReminder?(listener:(kind:'click'|'fallback',value:string)=>void):()=>void;
   onTranscriptionJobsChanged?(listener:(noteId:string)=>void):()=>void;
+  onAttachmentJobsChanged?(listener:()=>void):()=>void;
+  onPrepareClipAppend?(listener:(value:{requestId:string;noteId:string})=>Promise<void>):()=>void;
+  onClipAppendFinished?(listener:(value:{requestId:string;noteId:string;note:import("./ipc").NoteFull|null})=>void):()=>void;
 }
 
 declare global {
@@ -25,7 +29,7 @@ export const CHANNEL_NAMES: ChannelName[] = [
   "notes:list", "notes:get", "notes:create", "notes:update", "notes:move", "notes:moveToFolder",
   "notes:find", "notes:favorite", "notes:pin", "notes:delete", "notes:restore", "notes:purge",
   "notes:emptyTrash", "notebooks:list", "notebooks:create", "notebooks:rename",
-  "notebooks:delete", "folders:list", "folders:create", "folders:rename", "folders:move", "folders:delete", "tags:list", "tags:create", "tags:attach", "tags:detach",
+  "notebooks:delete", "notebooks:customize", "folders:list", "folders:create", "folders:rename", "folders:move", "folders:delete", "tags:list", "tags:create", "tags:attach", "tags:detach",
   "counts:get", "theme:get", "theme:set", "attachments:list", "attachments:save",
   "attachments:delete", "attachments:open", "export:markdown", "import:markdown",
   "backup:save", "backup:restore", "dialog:save", "dialog:open", "app:meta", "attachments:jobs", "attachments:retry-job", "attachments:cancel-job", "attachments:reindex",

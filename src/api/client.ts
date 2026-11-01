@@ -88,6 +88,9 @@ export class DesktopClient implements CadernoClient {
   renameNotebook(id: number, name: string): Promise<Notebook | null> {
     return this.call("notebooks:rename", { id, name }) as Promise<Notebook | null>;
   }
+  customizeNotebook(input: ChannelInputs["notebooks:customize"]): Promise<Notebook | null> {
+    return this.call("notebooks:customize", input) as Promise<Notebook | null>;
+  }
   deleteNotebook(id: number): Promise<boolean> {
     return this.call("notebooks:delete", { id }) as Promise<boolean>;
   }

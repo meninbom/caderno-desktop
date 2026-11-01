@@ -1,24 +1,31 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, {Suspense,lazy,useMemo,useEffect,useRef,useState} from "react";
 import {
-  LayoutTemplate, Search, Book, Files, Star, Tag as TagIcon, Trash2, Plus,
+  LayoutTemplate, Search, Book, Files, Star, Tag as TagIcon, Trash2, Plus, Home,
   SunMedium, MoonStar, Settings, PanelLeftClose, ShieldCheck, Pencil, MoreHorizontal,
-  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, FolderPlus, FolderInput, Check, StickyNote,
+  Download, Upload, DatabaseBackup, ChevronDown, ChevronRight, Copy, Folder, FolderOpen, FolderPlus, FolderInput, Check, StickyNote, Palette, X,
 } from "lucide-react";
-import type { NoteMeta } from "../../shared/ipc";
+import type { NoteMeta, Notebook } from "../../shared/ipc";
+import { collectNotebookLabels, notebookMatchesFilter, notebookSearchKey } from "../../shared/notebook-customization";
 import { useAppStore, Selection } from "../state/store";
 import { useDismissablePopover } from "../hooks/useDismissablePopover";
 import { client } from "../api/client";
 import { TagManager } from "./TagManager";
+import { NotebookBadge, notebookAccentStyle } from "./NotebookBadge";
 import { beginSidebarDrag, canDrop, endSidebarDrag, readSidebarDrag, type DropTarget, type SidebarDrag } from "./sidebarDrag";
 
-function Item({ icon, label, count, active, onClick, draggable, onDragStart, onDragEnd }: {
-  icon: React.ReactNode; label: string; count?: number; active: boolean; onClick: () => void;
+// O diálogo só é baixado quando o usuário pede para personalizar um caderno.
+const NotebookCustomizeDialog = lazy(() => import("./NotebookCustomizeDialog"));
+
+const notebookTooltip = (nb: Notebook) => [nb.name, nb.description, nb.labels.length ? `Etiquetas: ${nb.labels.join(", ")}` : ""].filter(Boolean).join("\n");
+
+function Item({ icon, label, title, count, active, onClick, draggable, onDragStart, onDragEnd }: {
+  icon: React.ReactNode; label: string; title?: string; count?: number; active: boolean; onClick: () => void;
   draggable?: boolean;
   onDragStart?: (event: React.DragEvent<HTMLButtonElement>) => void;
   onDragEnd?: (event: React.DragEvent<HTMLButtonElement>) => void;
 }) {
   return (
-    <button type="button" data-menu-item className={active ? "active" : undefined} title={label} draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onClick}>
+    <button type="button" data-menu-item className={active ? "active" : undefined} title={title ?? label} draggable={draggable} onDragStart={onDragStart} onDragEnd={onDragEnd} onClick={onClick}>
       {icon}
       <span>{label}</span>
       {count !== undefined && <span className="count">{count}</span>}
@@ -26,7 +33,9 @@ function Item({ icon, label, count, active, onClick, draggable, onDragStart, onD
   );
 }
 
-export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBackup, onClipper, area, onArea, onSettings, alerts, onCollapse, onCommand, onTemplates }: {
+export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBackup, onClipper, area, onArea, onSettings, alerts, onCollapse, onCommand, onTemplates, onHome, onNewNote, creatingNote=false }: {
+  onNewNote?:()=>void|Promise<void>;creatingNote?:boolean;
+  onHome?:()=>void;
   onCommand?:()=>void; onTemplates?:()=>void;
   onImportClick?: () => void;
   onImportEml?: () => void;
@@ -43,9 +52,23 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
   const [renameValue, setRenameValue] = useState("");
   const [moreOpen, setMoreOpen] = useState(false);
   const [tagManagerOpen, setTagManagerOpen] = useState(false);
+  const [customizingId, setCustomizingId] = useState<number | null>(null);
+  const [nbFilter, setNbFilter] = useState("");
+  const [nbFilterOpen, setNbFilterOpen] = useState(false);
+  const nbFilterActive = nbFilter.trim() !== "";
+  const visibleNotebooks = useMemo(() => nbFilterActive ? state.notebooks.filter(nb => notebookMatchesFilter(nb, nbFilter)) : state.notebooks, [state.notebooks, nbFilter, nbFilterActive]);
+  const notebookLabels = useMemo(() => collectNotebookLabels(state.notebooks), [state.notebooks]);
+  const customizing = customizingId === null ? null : state.notebooks.find(nb => nb.id === customizingId) ?? null;
+  const closeNbFilter = () => { setNbFilter(""); setNbFilterOpen(false); };
+  const matchedLabels = (nb: Notebook) => {
+    if (!nbFilterActive) return [];
+    const terms = notebookSearchKey(nbFilter).split(/\s+/).map(term => term.replace(/^#/, "")).filter(Boolean);
+    return nb.labels.filter(label => terms.some(term => notebookSearchKey(label).includes(term)));
+  };
   const [closedNotebooks, setClosedNotebooks] = useState<Record<number, boolean>>({});
   const [closedFolders, setClosedFolders] = useState<Record<string, boolean>>({});
   const [treeNotes, setTreeNotes] = useState<NoteMeta[]>([]);
+  const [treeLimits,setTreeLimits]=useState<Record<string,number>>({});
   const [dropKey, setDropKey] = useState<string | null>(null);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const dragClick = useRef(false);
@@ -59,15 +82,22 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
     state.counts.trash,
     state.notebooks.map(nb => `${nb.id}:${nb.noteCount}`).join(","),
     state.folders.map(folder => `${folder.id}:${folder.notebookId}:${folder.noteCount}:${folder.name}`).join(","),
-    state.openNote ? `${state.openNote.id}:${state.openNote.title}:${state.openNote.updatedAt}:${state.openNote.folderId}:${state.openNote.notebookId}` : "",
   ].join("|");
   useEffect(() => {
     let cancel = false;
-    void client.listNotes({ view: "all", order: "title_asc" }).then(notes => {
-      if (!cancel) setTreeNotes(notes);
-    }).catch(() => {});
-    return () => { cancel = true; };
+    const load=()=>{void client.listNotes({view:"all",order:"title_asc"}).then(notes=>{if(!cancel)setTreeNotes(notes);}).catch(()=>{});};
+    load();window.addEventListener("focus",load);
+    const off=window.cadernoDesktop?.onExternalDataChange?.(load);
+    const offClipper=window.cadernoDesktop?.onClipperCapture?.(load);
+    return () => { cancel = true;window.removeEventListener("focus",load);off?.();offClipper?.(); };
   }, [treeToken]);
+  const treeIndex=useMemo(()=>{
+    const notebooks=new Map<number,NoteMeta[]>(),folders=new Map<string,NoteMeta[]>();
+    const active=state.openNote;
+    const notes=treeNotes.map(note=>active?.id===note.id?{...note,title:active.title,notebookId:active.notebookId,folderId:active.folderId}:note).sort((a,b)=>a.title.localeCompare(b.title,undefined,{sensitivity:"base"}));
+    for(const note of notes){if(note.folderId){const group=folders.get(note.folderId)??[];group.push(note);folders.set(note.folderId,group);}else if(note.notebookId!==null){const group=notebooks.get(note.notebookId)??[];group.push(note);notebooks.set(note.notebookId,group);}}
+    return {notebooks,folders};
+  },[treeNotes,state.openNote?.id,state.openNote?.title,state.openNote?.notebookId,state.openNote?.folderId]);
 
   const submitFolderDialog = async () => {
     const dialog = folderDialog;
@@ -94,16 +124,17 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
   };
 
   const select = (selection: Selection) => {
+    const refreshCurrent=!state.search&&JSON.stringify(state.selection)===JSON.stringify(selection);
     onArea?.('notes');
     dispatch({ type: "selection", selection });
     void openNote(null);
-    void refreshNotes();
+    if(refreshCurrent)void refreshNotes();
   };
 
   const createNotebook = async () => {
     const name = newName.trim();
     if (!name) return;
-    const nb = await (await import("../api/client")).client.createNotebook(name);
+    const nb = await client.createNotebook(name);
     if (nb === null) {
       dispatch({ type: "error", message: `Já existe um caderno com o nome "${name}".` });
     } else {
@@ -123,13 +154,13 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
     const name = renameValue.trim();
     setRenamingId(null);
     if (!id || !name) return;
-    const nb = await (await import("../api/client")).client.renameNotebook(id, name);
+    const nb = await client.renameNotebook(id, name);
     if (nb === null) dispatch({ type: "error", message: `Não foi possível renomear: "${name}" já existe.` });
     await refreshMeta();
   };
 
   const removeNotebook = async (id: number) => {
-    await (await import("../api/client")).client.deleteNotebook(id);
+    await client.deleteNotebook(id);
     if ((state.selection.kind === "notebook" || state.selection.kind === "folder") && state.selection.notebookId === id) {
       dispatch({ type: "selection", selection: { kind: "all" } });
     }
@@ -255,7 +286,7 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
     <button
       key={note.id}
       type="button"
-      className={`tree-note ${state.openNoteId === note.id ? "active" : ""} ${draggingId === note.id ? "is-dragging" : ""}`}
+      className={`tree-note ${area === 'notes' && state.openNoteId === note.id ? "active" : ""} ${draggingId === note.id ? "is-dragging" : ""}`}
       draggable
       title={note.title || "Sem título"}
       onDragStart={event => startNoteDrag(event, note)}
@@ -267,10 +298,11 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
     </button>
   );
 
+  const renderBranchNotes=(notes:NoteMeta[],key:string,name:string)=>{const limit=treeLimits[key]??60;return <>{notes.slice(0,limit).map(renderTreeNote)}{notes.length>limit&&<button className="tree-load-more" aria-label={`Mostrar mais notas em ${name}`} onClick={()=>setTreeLimits(old=>({...old,[key]:limit+60}))}>Mostrar mais <span>{notes.length-limit}</span></button>}</>;};
   const renderNotebook = (nb: (typeof state.notebooks)[number]) => {
-    const active = state.selection.kind === "notebook" && state.selection.notebookId === nb.id;
+    const active = area === 'notes' && state.selection.kind === "notebook" && state.selection.notebookId === nb.id;
     const folders = state.folders.filter(folder => folder.notebookId === nb.id);
-    const looseNotes = treeNotes.filter(note => note.notebookId === nb.id && !note.folderId);
+    const looseNotes = treeIndex.notebooks.get(nb.id)??[];
     const notebookClosed = closedNotebooks[nb.id] === true;
     const hasChildren = folders.length > 0 || looseNotes.length > 0;
     return <div
@@ -278,19 +310,21 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
       className={`notebook-block ${dropKey === `notebook:${nb.id}` ? "drop-target" : ""}`}
       {...bindDrop(`notebook:${nb.id}`, { kind: "notebook", notebookId: nb.id }, notebookClosed && hasChildren ? () => setClosedNotebooks(current => ({ ...current, [nb.id]: false })) : undefined)}
     >
-      <div className={`notebook-row tree-row ${active ? "active" : ""}`}>
+      <div className={`notebook-row tree-row ${active ? "active" : ""} ${nb.color ? "has-accent" : ""}`} style={notebookAccentStyle(nb.color)}>
       {hasChildren ? <button type="button" className="tree-chevron" aria-expanded={!notebookClosed} title={notebookClosed ? "Expandir" : "Recolher"} aria-label={`${notebookClosed ? "Expandir" : "Recolher"}${folders.length > 0 ? " pastas de" : ""} ${nb.name}`} onClick={() => setClosedNotebooks(current => ({ ...current, [nb.id]: !notebookClosed }))}>{notebookClosed ? <ChevronRight size={12} /> : <ChevronDown size={12} />}</button> : <span className="tree-chevron-spacer" aria-hidden="true" />}
-      {renamingId === nb.id ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenamingId(null); }} onBlur={() => void commitRename()} style={{ width: "100%", padding: "4px 8px", fontSize: 12.5 }} /> : <Item icon={<Book size={15} />} label={nb.name} count={nb.noteCount} active={active} onClick={() => select({ kind: "notebook", notebookId: nb.id })} />}
+      {renamingId === nb.id ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onKeyDown={e => { if (e.key === "Enter") void commitRename(); if (e.key === "Escape") setRenamingId(null); }} onBlur={() => void commitRename()} style={{ width: "100%", padding: "4px 8px", fontSize: 12.5 }} /> : <Item icon={<NotebookBadge notebook={nb} size={15} />} label={nb.name} title={notebookTooltip(nb)} count={nb.noteCount} active={active} onClick={() => select({ kind: "notebook", notebookId: nb.id })} />}
       {renamingId !== nb.id && <span className="nb-actions">
         <button type="button" className="icon" title="Nova pasta" aria-label={`Nova pasta em ${nb.name}`} onClick={() => setFolderDialog({ action: "create", notebookId: nb.id, value: "" })}><FolderPlus size={13} /></button>
+        <button type="button" className="icon" title="Personalizar caderno" aria-label={`Personalizar ${nb.name}`} onClick={() => setCustomizingId(nb.id)}><Palette size={13} /></button>
         <button type="button" className="icon" title="Renomear" aria-label={`Renomear ${nb.name}`} onClick={() => startRename(nb.id, nb.name)}><Pencil size={13} /></button>
         <button type="button" className="icon" title="Excluir caderno" aria-label={`Excluir ${nb.name}`} onClick={() => void removeNotebook(nb.id)}><Trash2 size={13} /></button>
       </span>}
       </div>
+      {matchedLabels(nb).length > 0 && <div className="nb-match-labels" aria-label={`Etiquetas de ${nb.name}`}>{matchedLabels(nb).map(label => <span key={label} className="nb-chip"><span>{label}</span></span>)}</div>}
       {!notebookClosed && hasChildren && <div className="tree-children">
         {folders.map(folder => {
-          const folderActive = state.selection.kind === "folder" && state.selection.folderId === folder.id;
-          const notes = treeNotes.filter(note => note.folderId === folder.id);
+          const folderActive = area === 'notes' && state.selection.kind === "folder" && state.selection.folderId === folder.id;
+          const notes = treeIndex.folders.get(folder.id)??[];
           const folderOpen = closedFolders[folder.id] === false;
           return <div key={folder.id} className={`folder-block ${dropKey === `folder:${folder.id}` ? "drop-target" : ""}`} {...bindDrop(`folder:${folder.id}`, { kind: "folder", folderId: folder.id, notebookId: nb.id }, folderOpen ? undefined : () => setClosedFolders(current => ({ ...current, [folder.id]: false })))}>
             <div className={`folder-row tree-row ${folderActive ? "active" : ""} ${draggingId === folder.id ? "is-dragging" : ""}`}>
@@ -314,10 +348,10 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
                 <button type="button" className="icon" title="Excluir pasta" aria-label={`Excluir pasta ${folder.name}`} onClick={() => void removeFolder(folder.id, nb.id, folder.name)}><Trash2 size={13} /></button>
               </span>
             </div>
-            {folderOpen && notes.length > 0 && <div className="tree-children">{notes.map(renderTreeNote)}</div>}
+            {folderOpen && notes.length > 0 && <div className="tree-children">{renderBranchNotes(notes,`f:${folder.id}`,folder.name)}</div>}
           </div>;
         })}
-        {looseNotes.map(renderTreeNote)}
+        {renderBranchNotes(looseNotes,`n:${nb.id}`,nb.name)}
       </div>}
     </div>;
   };
@@ -330,9 +364,10 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
         {onCollapse && <button className="pane-collapse" title="Recolher barra lateral (Ctrl+\)" aria-label="Recolher barra lateral" onClick={onCollapse}><PanelLeftClose size={14} /></button>}
       </div>
 
-      <button className="new-note" onClick={async () => {
+      <button className="new-note" disabled={creatingNote} onClick={async () => {
+        if(onNewNote){await onNewNote();return;}
         try {
-          if (area === 'notes' && state.openNote) {
+          if (area === 'notes' && state.openNote && document.querySelector('.tiptap')) {
             await new Promise<void>((resolve, reject) => window.dispatchEvent(new CustomEvent('caderno:flush-editor', { detail: { resolve, reject } })));
           }
         } catch (error) {
@@ -340,8 +375,7 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
           return;
         }
         onArea?.('notes');
-        const c = (await import("../api/client")).client;
-        const created = await c.createNote(
+        const created = await client.createNote(
           state.selection.kind === "folder"
             ? { notebookId: state.selection.notebookId, folderId: state.selection.folderId }
             : state.selection.kind === "notebook" ? { notebookId: state.selection.notebookId } : {}
@@ -356,13 +390,25 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
 
       <button className="sidebar-search template-entry" onClick={onTemplates} aria-label="Nova nota a partir de modelo"><LayoutTemplate size={14}/><span>Nova a partir de modelo</span></button>
       <button className="sidebar-search" onClick={onCommand} aria-label="Pesquisar no Caderno"><Search size={14}/><span>Busca geral</span><kbd>Ctrl+K</kbd></button>
-      <Item icon={<Files size={15} />} label="Notas" count={state.counts.all} active={state.selection.kind === "all"} onClick={() => select({ kind: "all" })} />
+      <Item icon={<Home size={15}/>} label="Início" active={area==='notes'&&!state.openNoteId&&state.selection.kind==='all'&&!state.search} onClick={()=>onHome?.()}/>
+      <Item icon={<Files size={15} />} label="Notas" count={state.counts.all} active={area === 'notes' && !!state.openNoteId && state.selection.kind === "all"} onClick={() => select({ kind: "all" })} />
       <Item icon={<Files size={15} />} label="Tarefas" active={area==='tasks'} onClick={()=>onArea?.('tasks')} />
       <Item icon={<Book size={15} />} label="Calendário" active={area==='calendar'} onClick={()=>onArea?.('calendar')} />
-      <Item icon={<Star size={15} />} label="Favoritas" count={state.counts.favorites} active={state.selection.kind === "favorites"} onClick={() => select({ kind: "favorites" })} />
-      <Item icon={<Trash2 size={15} />} label="Lixeira" count={state.counts.trash} active={state.selection.kind === "trash"} onClick={() => select({ kind: "trash" })} />
+      <Item icon={<Star size={15} />} label="Favoritas" count={state.counts.favorites} active={area === 'notes' && state.selection.kind === "favorites"} onClick={() => select({ kind: "favorites" })} />
+      <Item icon={<Trash2 size={15} />} label="Lixeira" count={state.counts.trash} active={area === 'notes' && state.selection.kind === "trash"} onClick={() => select({ kind: "trash" })} />
 
-      <div className="nav-section-label"><span>Cadernos</span></div>
+      <div className="nav-section-label tags-section-heading"><span>Cadernos</span><button type="button" aria-label="Filtrar cadernos" title="Filtrar cadernos por nome ou etiqueta" aria-expanded={nbFilterOpen || nbFilterActive} aria-pressed={nbFilterOpen || nbFilterActive} onClick={() => nbFilterOpen || nbFilterActive ? closeNbFilter() : setNbFilterOpen(true)}><Search size={13}/></button></div>
+      {(nbFilterOpen || nbFilterActive) && <div className="nb-filter" role="search" aria-label="Filtrar cadernos">
+        <div className="nb-filter-field">
+          <Search size={13} aria-hidden="true" />
+          <input autoFocus type="search" aria-label="Filtrar cadernos por nome ou etiqueta" placeholder="Nome ou #etiqueta" value={nbFilter} maxLength={80} onChange={e => setNbFilter(e.target.value)} onKeyDown={e => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); closeNbFilter(); } }} />
+          {nbFilterActive && <button type="button" className="nb-filter-clear" aria-label="Limpar filtro de cadernos" onClick={() => setNbFilter("")}><X size={12} /></button>}
+        </div>
+        {notebookLabels.length > 0 && <div className="nb-filter-chips" role="group" aria-label="Etiquetas de cadernos">
+          {notebookLabels.slice(0, 10).map(({ label, count }) => <button key={label} type="button" className="nb-chip" aria-pressed={notebookSearchKey(nbFilter) === notebookSearchKey(`#${label}`)} title={`${count} ${count === 1 ? "caderno" : "cadernos"}`} onClick={() => setNbFilter(current => notebookSearchKey(current) === notebookSearchKey(`#${label}`) ? "" : `#${label}`)}><span>{label}</span></button>)}
+        </div>}
+        {nbFilterActive && <span className="nb-filter-summary" role="status">{visibleNotebooks.length} de {state.notebooks.length} {state.notebooks.length === 1 ? "caderno" : "cadernos"}</span>}
+      </div>}
       {creating ? (
         <div style={{ padding: "2px 8px" }}>
           <input
@@ -379,16 +425,17 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
         <button data-menu-item onClick={() => setCreating(true)}><Plus size={14} /> Criar caderno</button>
       )}
 
-      {state.counts.unfiled > 0 && (
+      {state.counts.unfiled > 0 && !nbFilterActive && (
         <Item
           icon={<Book size={15} />}
           label="Sem caderno"
           count={state.counts.unfiled}
-          active={state.selection.kind === "unfiled"}
+          active={area === 'notes' && state.selection.kind === "unfiled"}
           onClick={() => select({ kind: "unfiled" })}
         />
       )}
-      {state.notebooks.map(nb => renderNotebook(nb))}
+      {visibleNotebooks.map(nb => renderNotebook(nb))}
+      {nbFilterActive && visibleNotebooks.length === 0 && <span className="nb-filter-empty">Nenhum caderno corresponde ao filtro.</span>}
 
       <div className="nav-section-label tags-section-heading"><span>Etiquetas</span><button aria-label="Gerenciar etiquetas" title="Gerenciar etiquetas" onClick={() => setTagManagerOpen(true)}><Settings size={13}/></button></div>
       {state.tags.length === 0 && <span style={{ padding: "2px 10px", color: "var(--text-faint)", fontSize: 12 }}>Nenhuma etiqueta</span>}
@@ -399,13 +446,21 @@ export function Sidebar({ onImportClick, onImportEml, onSaveBackup, onRestoreBac
           icon={<TagIcon size={15} color={t.color ?? undefined} />}
           label={t.name}
           count={t.noteCount}
-          active={state.selection.kind === "tag" && state.selection.tagId === t.id}
+          active={area === 'notes' && state.selection.kind === "tag" && state.selection.tagId === t.id}
           onClick={() => select({ kind: "tag", tagId: t.id })}
         />
       ))}
       </div>
 
       {tagManagerOpen && <TagManager onClose={() => setTagManagerOpen(false)}/>}
+      {customizing && <Suspense fallback={null}>
+        <NotebookCustomizeDialog
+          notebook={customizing}
+          labelSuggestions={notebookLabels.filter(({ label }) => !customizing.labels.includes(label)).map(({ label }) => label)}
+          onClose={() => setCustomizingId(null)}
+          onSaved={saved => { dispatch({ type: "notebooks", notebooks: state.notebooks.map(nb => nb.id === saved.id ? saved : nb) }); void refreshMeta(); }}
+        />
+      </Suspense>}
       <div className="sidebar-footer">
         <span className="pop-anchor" ref={morePopover.rootRef}>
           <button ref={morePopover.triggerRef} title="Mais ações" aria-label="Mais ações" aria-expanded={moreOpen} onClick={() => setMoreOpen((v) => !v)}>

@@ -29,6 +29,7 @@ export function ReferencePane({ noteId, mainNoteId, onChange, onSwap, onClose, o
 
   useEffect(() => {
     if (!editor || !note) return;
+    if(editor.storage.attachment)editor.storage.attachment.noteId=note.id;
     editor.commands.setContent(note.contentHtml, false);
     document.querySelector(".reference-body")?.scrollTo({ top: 0 });
   }, [editor, note?.id, note?.updatedAt]); // eslint-disable-line react-hooks/exhaustive-deps

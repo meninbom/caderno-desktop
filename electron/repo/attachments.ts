@@ -8,6 +8,8 @@ import { extractVisibleText } from "./db";
 import type { ParsedEml } from "./eml";
 import { emlHtml } from "./eml";
 import { TemplatesRepo, restoreBackupTemplates, validateBackupTemplates, type BackupTemplate } from "./templates";
+import { ensureClipColumns } from "../clipper-commit";
+import { NOTEBOOK_DEFAULT_ICON, parseStoredLabels, sanitizeNotebookCustomization } from "../../shared/notebook-customization";
 
 export interface AttachmentRow {
   id: number;
@@ -178,7 +180,8 @@ export interface BackupPayload {
   app: string;
   schemaVersion: number;
   exportedAt: number;
-  notebooks: { id: number; name: string }[];
+  /** icon/color/description/labels são opcionais: backups antigos não os têm. */
+  notebooks: { id: number; name: string; icon?: string; color?: string | null; description?: string; labels?: string[] }[];
   folders?: { id: string; notebookId: number; name: string; sortOrder: number; createdAt: number; updatedAt: number }[];
   notes: {
     id: string;
@@ -198,7 +201,7 @@ export interface BackupPayload {
   tasks?: {recurrence?:import("../../shared/recurrence").Recurrence;priority?:import("../../shared/recurrence").Priority;timeZone?:string;recurrenceAnchor?:string|null;recurrenceSpawned?:number;recurrenceParentId?:string|null;id:string;noteId:string;title:string;done:boolean;dueAt:number|null;reminderAt:number|null;reminderState:'pending'|'delivered';createdAt:number;updatedAt:number}[];
   events?: {id:string;noteId:string|null;title:string;description:string;startAt:number;endAt:number;timeZone:string;allDay:boolean;createdAt:number;updatedAt:number}[];
   emlImports?: {messageKey:string;noteId:string;importedAt:number}[];
-  clipperSources?: {noteId:string;sourceUrl:string;sourceTitle:string;capturedAt:number}[];
+  clipperSources?: {noteId:string;sourceUrl:string;sourceTitle:string;capturedAt:number;sourceKey?:string;requestId?:string|null;contentHash?:string|null;mode?:string|null;canonicalUrl?:string|null}[];
   templates?: BackupTemplate[];
   transcripts?: {id:string;attachmentId:number;attachmentStoredName?:string;noteId:string;model:string;language:string;durationMs:number;text:string;createdAt:number;segments:{startMs:number;endMs:number;text:string}[]}[];
 }
@@ -207,6 +210,7 @@ export class BackupRepo {
   constructor(private db: Database.Database, private attachmentsDir?: string) {}
 
   dump(): BackupPayload {
+    ensureClipColumns(this.db);
     return this.db.transaction(() => this.dumpInTransaction())();
   }
 
@@ -214,7 +218,10 @@ export class BackupRepo {
     const attachmentDir=this.attachmentsDir;
     const assetRows=attachmentDir ? this.db.prepare("SELECT stored_name,kind,byte_size FROM attachments ORDER BY id").all() as {stored_name:string;kind:string;byte_size:number}[] : [];
     if(assetRows.some(f=>f.byte_size>(f.kind==="image"?10:50)*1024*1024)||assetRows.reduce((n,f)=>n+f.byte_size,0)>300*1024*1024) throw new Error("Backup excede limites: imagens até 10 MB, outros anexos até 50 MB e total até 300 MB.");
-    const notebooks = this.db.prepare("SELECT id, name FROM notebooks").all() as unknown as { id: number; name: string }[];
+    const notebooks = this.db.prepare("SELECT id, name, icon, color, description, labels FROM notebooks ORDER BY id").all().map((row: any) => ({
+      id: row.id as number, name: row.name as string,
+      ...sanitizeNotebookCustomization({ icon: row.icon, color: row.color, description: row.description, labels: parseStoredLabels(row.labels) }),
+    })) as BackupPayload["notebooks"];
     const folders = this.db.prepare("SELECT id,notebook_id AS notebookId,name,sort_order AS sortOrder,created_at AS createdAt,updated_at AS updatedAt FROM note_folders ORDER BY sort_order,name COLLATE NOCASE").all() as unknown as BackupPayload["folders"];
     const noteRows = this.db.prepare("SELECT id, notebook_id, folder_id, title, content_html, favorited, pinned, deleted_at, created_at, updated_at FROM notes").all() as unknown as {
       id: string;
@@ -261,7 +268,7 @@ export class BackupRepo {
       tasks:this.db.prepare("SELECT id,note_id AS noteId,title,is_done AS done,due_at AS dueAt,reminder_at AS reminderAt,reminder_state AS reminderState,created_at AS createdAt,updated_at AS updatedAt,recurrence,priority,time_zone AS timeZone,recurrence_anchor AS recurrenceAnchor,recurrence_spawned AS recurrenceSpawned,recurrence_parent_id AS recurrenceParentId FROM tasks").all() as BackupPayload['tasks'],
       events:this.db.prepare("SELECT id,note_id AS noteId,title,description,start_at AS startAt,end_at AS endAt,time_zone AS timeZone,all_day AS allDay,created_at AS createdAt,updated_at AS updatedAt FROM calendar_events").all().map((x:any)=>({...x,allDay:!!x.allDay})) as BackupPayload['events'],
       emlImports:this.db.prepare("SELECT message_key AS messageKey,note_id AS noteId,imported_at AS importedAt FROM eml_imports ORDER BY imported_at").all() as BackupPayload['emlImports'],
-      clipperSources:this.db.prepare("SELECT note_id AS noteId,source_url AS sourceUrl,source_title AS sourceTitle,captured_at AS capturedAt FROM clipper_sources ORDER BY captured_at").all() as BackupPayload['clipperSources'],
+      clipperSources:this.db.prepare("SELECT source_key AS sourceKey,note_id AS noteId,source_url AS sourceUrl,source_title AS sourceTitle,captured_at AS capturedAt,request_id AS requestId,content_hash AS contentHash,mode,canonical_url AS canonicalUrl FROM clipper_sources ORDER BY captured_at,source_key").all() as BackupPayload['clipperSources'],
       transcripts:this.db.prepare("SELECT t.id,t.attachment_id AS attachmentId,a.stored_name AS attachmentStoredName,t.note_id AS noteId,t.model,t.language,t.duration_ms AS durationMs,t.text,t.created_at AS createdAt FROM transcripts t JOIN attachments a ON a.id=t.attachment_id ORDER BY t.created_at").all().map((t:any)=>({...t,segments:this.db.prepare("SELECT start_ms AS startMs,end_ms AS endMs,text FROM transcript_segments WHERE transcript_id=? ORDER BY start_ms").all(t.id)})) as BackupPayload['transcripts'],
       attachments: attachmentDir ? (this.db.prepare("SELECT note_id,file_name,stored_name,mime_type,kind,sha256 FROM attachments ORDER BY id").all() as {note_id:string;file_name:string;stored_name:string;mime_type:string;kind:string;sha256:string|null}[]).map(a=>{
         const bytes=fs.readFileSync(path.join(attachmentDir,a.stored_name));
@@ -304,8 +311,24 @@ export class BackupRepo {
         const now = Date.now();
         return Number(this.db.prepare("INSERT INTO notebooks (name, created_at, updated_at) VALUES (?, ?, ?)").run(name, now, now).lastInsertRowid);
       };
+      // Personalização do backup só preenche campos ainda no padrão: nunca sobrescreve o que o usuário já configurou localmente.
+      const applyNotebookCustomization = (nb: BackupPayload["notebooks"][number]): void => {
+        const id = notebookMap.get(nb.id);
+        if (id === undefined || (nb.icon === undefined && nb.color === undefined && nb.description === undefined && nb.labels === undefined)) return;
+        const incoming = sanitizeNotebookCustomization(nb);
+        const row = this.db.prepare("SELECT icon, color, description, labels FROM notebooks WHERE id=?").get(id) as { icon: string | null; color: string | null; description: string | null; labels: string | null };
+        const current = sanitizeNotebookCustomization({ icon: row.icon, color: row.color, description: row.description, labels: parseStoredLabels(row.labels) });
+        this.db.prepare("UPDATE notebooks SET icon=?, color=?, description=?, labels=? WHERE id=?").run(
+          current.icon === NOTEBOOK_DEFAULT_ICON ? incoming.icon : current.icon,
+          current.color ?? incoming.color,
+          current.description === "" ? incoming.description : current.description,
+          JSON.stringify(current.labels.length ? current.labels : incoming.labels),
+          id,
+        );
+      };
       for (const nb of payload.notebooks) {
         notebookMap.set(nb.id, getOrCreateNotebook(nb.name));
+        applyNotebookCustomization(nb);
       }
       const folderMap = new Map<string, string>();
       for (const folder of payload.folders ?? []) {
@@ -367,7 +390,13 @@ export class BackupRepo {
       }
       for(const event of payload.events??[]){const noteId=event.noteId&&this.db.prepare('SELECT 1 FROM notes WHERE id=?').get(event.noteId)?event.noteId:null;this.db.prepare("INSERT INTO calendar_events(id,note_id,title,description,start_at,end_at,time_zone,all_day,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET note_id=excluded.note_id,title=excluded.title,description=excluded.description,start_at=excluded.start_at,end_at=excluded.end_at,time_zone=excluded.time_zone,all_day=excluded.all_day,updated_at=excluded.updated_at").run(event.id,noteId,event.title,event.description,event.startAt,event.endAt,event.timeZone,event.allDay?1:0,event.createdAt,event.updatedAt);}
       for(const imported of payload.emlImports??[]){if(this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(imported.noteId))this.db.prepare("INSERT OR REPLACE INTO eml_imports(message_key,note_id,imported_at) VALUES(?,?,?)").run(imported.messageKey,imported.noteId,imported.importedAt);}
-      for(const clip of payload.clipperSources??[]){if(this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(clip.noteId)&&/^https?:\/\//i.test(clip.sourceUrl))this.db.prepare("INSERT OR IGNORE INTO clipper_sources(source_key,note_id,source_url,source_title,captured_at) VALUES(?,?,?,?,?)").run(crypto.createHash("sha256").update(clip.sourceUrl).digest("hex"),clip.noteId,clip.sourceUrl,clip.sourceTitle,clip.capturedAt);}
+      for(const clip of payload.clipperSources??[]){
+        if(!this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(clip.noteId)||!/^https?:\/\//i.test(clip.sourceUrl))continue;
+        // Old backups did not carry a key. Include note/date so separate selections survive.
+        const sourceKey=clip.sourceKey??crypto.createHash("sha256").update(JSON.stringify([clip.sourceUrl,clip.noteId,clip.capturedAt])).digest("hex");
+        if(!clip.sourceKey&&this.db.prepare("SELECT 1 FROM clipper_sources WHERE note_id=? AND source_url=? AND captured_at=?").get(clip.noteId,clip.sourceUrl,clip.capturedAt))continue;
+        this.db.prepare("INSERT OR IGNORE INTO clipper_sources(source_key,note_id,source_url,source_title,captured_at,request_id,content_hash,mode,canonical_url) VALUES(?,?,?,?,?,?,?,?,?)").run(sourceKey,clip.noteId,clip.sourceUrl,clip.sourceTitle,clip.capturedAt,clip.requestId??null,clip.contentHash??null,clip.mode??null,clip.canonicalUrl??null);
+      }
       if(this.attachmentsDir) for(const {a} of validatedAssets) {
         if(!this.db.prepare("SELECT 1 FROM notes WHERE id=?").get(a.noteId)) continue;
         if(this.db.prepare("SELECT 1 FROM attachments WHERE stored_name=?").get(a.storedName)) continue;
@@ -392,6 +421,7 @@ export class BackupRepo {
           stageFiles.pop();newlyWritten.push(dest);
         }
       }
+      ensureClipColumns(this.db);
       apply();
     } catch(error) { for(const f of stageFiles) fs.rmSync(f,{force:true});for(const f of newlyWritten) fs.rmSync(f,{force:true});return {ok:false,error:`Restauração cancelada sem alterar o perfil: ${String(error)}`}; }
     const notebooks = this.db.prepare("SELECT COUNT(*) AS c FROM notebooks").get() as { c: number };
@@ -444,7 +474,16 @@ export class BackupRepo {
     }
     const transcriptRows=(p as BackupPayload).transcripts;if(transcriptRows!==undefined&&(!Array.isArray(transcriptRows)||transcriptRows.some(t=>!t||typeof t.id!=="string"||typeof t.text!=="string"||!Array.isArray(t.segments))))return "transcrição inválida";
     if ((p as BackupPayload).emlImports !== undefined && !Array.isArray((p as BackupPayload).emlImports)) return "lista de importações EML inválida";
-    if ((p as BackupPayload).clipperSources !== undefined && (!Array.isArray((p as BackupPayload).clipperSources) || (p as BackupPayload).clipperSources!.some(c=>!c||typeof c.noteId!=="string"||typeof c.sourceUrl!=="string"||typeof c.sourceTitle!=="string"||typeof c.capturedAt!=="number"))) return "lista de fontes do Clipper inválida";
+    if(p.clipperSources!==undefined&&!Array.isArray(p.clipperSources))return "lista de fontes do Clipper inválida";
+    const sourceKeys=new Set<string>(),requestIds=new Set<string>();
+    for(const clip of p.clipperSources??[]){
+      if(!clip||typeof clip.noteId!=="string"||typeof clip.sourceUrl!=="string"||typeof clip.sourceTitle!=="string"||!Number.isFinite(clip.capturedAt))return "fonte do Clipper inválida";
+      if(clip.sourceKey!==undefined){if(typeof clip.sourceKey!=="string"||!/^[a-f0-9]{64}$/.test(clip.sourceKey)||sourceKeys.has(clip.sourceKey))return "chave de fonte inválida";sourceKeys.add(clip.sourceKey);}
+      if(clip.requestId!=null){if(typeof clip.requestId!=="string"||!IdSchema.safeParse(clip.requestId).success||requestIds.has(clip.requestId))return "identificador de captura inválido";requestIds.add(clip.requestId);}
+      if(clip.contentHash!=null&&(typeof clip.contentHash!=="string"||clip.contentHash.length>128))return "hash de captura inválido";
+      if(clip.mode!=null&&!["article","selection","page","bookmark"].includes(clip.mode))return "modo de captura inválido";
+      if(clip.canonicalUrl!=null&&(typeof clip.canonicalUrl!=="string"||clip.canonicalUrl.length>8192||!/^https?:\/\//i.test(clip.canonicalUrl)))return "URL de captura inválida";
+    }
     if (Array.isArray((p as BackupPayload).attachments) && (p as BackupPayload).attachments!.length > 10000) return "muitos anexos";
     for (const n of p.notes) {
       if (typeof n !== "object" || n === null) return "nota inválida";
@@ -461,6 +500,11 @@ export class BackupRepo {
     for (const nb of p.notebooks) {
       if (typeof nb !== "object" || nb === null) return "caderno inválido";
       if (typeof (nb as { name?: unknown }).name !== "string") return "caderno com name inválido";
+      const custom = nb as { icon?: unknown; color?: unknown; description?: unknown; labels?: unknown };
+      if ((custom.icon !== undefined && typeof custom.icon !== "string") || (custom.color != null && typeof custom.color !== "string")
+        || (custom.description !== undefined && typeof custom.description !== "string")
+        || (custom.labels !== undefined && (!Array.isArray(custom.labels) || custom.labels.length > 200 || custom.labels.some(label => typeof label !== "string" || label.length > 200)))
+        || (typeof custom.icon === "string" && custom.icon.length > 200) || (typeof custom.description === "string" && custom.description.length > 5000)) return "caderno com personalização inválida";
     }
     for(const a of (p as BackupPayload).attachments??[]){if(!a||typeof a.noteId!=="string"||typeof a.dataBase64!=="string"||typeof a.sha256!=="string"||typeof a.storedName!=="string"||typeof a.mimeType!=="string"||typeof a.kind!=="string")return "anexo inválido";}
     return null;

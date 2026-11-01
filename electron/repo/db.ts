@@ -227,6 +227,15 @@ const MIGRATIONS = [
     if (notebookColumns.some(column => column.name === "stack_id")) db.exec("UPDATE notebooks SET stack_id=NULL WHERE stack_id IS NOT NULL;");
     if (db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='notebook_stacks'").get()) db.exec("DELETE FROM notebook_stacks;");
   } },
+  { version: 16, up(db: Database.Database): void {
+    // Personalização de cadernos (aditiva): `color` já existe desde a v1 e estava sem uso.
+    // `labels` guarda um array JSON de etiquetas do caderno (distintas das tags das notas).
+    const columns = new Set((db.prepare("PRAGMA table_info(notebooks)").all() as { name: string }[]).map(column => column.name));
+    if (!columns.has("color")) db.exec("ALTER TABLE notebooks ADD COLUMN color TEXT;");
+    if (!columns.has("icon")) db.exec("ALTER TABLE notebooks ADD COLUMN icon TEXT NOT NULL DEFAULT 'book';");
+    if (!columns.has("description")) db.exec("ALTER TABLE notebooks ADD COLUMN description TEXT NOT NULL DEFAULT '';");
+    if (!columns.has("labels")) db.exec("ALTER TABLE notebooks ADD COLUMN labels TEXT NOT NULL DEFAULT '[]';");
+  } },
 ];
 
 export function preparePaths(files: RepositoryFiles): void {

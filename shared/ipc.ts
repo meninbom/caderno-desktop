@@ -3,6 +3,11 @@
  * Todos os payloads são validados com Zod no processo principal.
  */
 import { z } from "zod";
+import {EXPORT_LIMITS} from "./export-limits";
+export {EXPORT_LIMITS} from "./export-limits";
+import {CustomizeNotebookInputSchema} from "./notebook-customization-schema";
+export {CustomizeNotebookInputSchema} from "./notebook-customization-schema";
+export type {CustomizeNotebookInput} from "./notebook-customization";
 
 export const NoteView = z.enum(["all", "favorites", "trash", "notebook", "tag", "unfiled", "folder"]);
 export type NoteView = z.infer<typeof NoteView>;
@@ -40,6 +45,13 @@ export interface Notebook {
   name: string;
   createdAt: number;
   noteCount: number;
+  /** Preset ou "emoji:<emoji>"; padrão "book". Ver shared/notebook-customization. */
+  icon: string;
+  /** Cor de destaque #rrggbb ou null. */
+  color: string | null;
+  description: string;
+  /** Etiquetas do caderno (independentes das tags das notas). */
+  labels: string[];
 }
 export interface NoteFolder { id: string; notebookId: number; name: string; sortOrder: number; noteCount: number; createdAt: number; updatedAt: number }
 export interface NoteLinkTarget { id: string; title: string; preview: string }
@@ -160,7 +172,6 @@ export const TemplateApplySchema = z.object({ id: IdSchema, notebookId: z.number
 export const ExportFormatSchema = z.enum(["pdf", "html"]);
 export type ExportFormat = z.infer<typeof ExportFormatSchema>;
 export const ExportBeginSchema = z.object({ noteId: IdSchema, format: ExportFormatSchema });
-export const EXPORT_LIMITS = { pdfAttachments: 20, pagesPerPdf: 60, totalPages: 200, pageDataUrlChars: 6_000_000, totalRenderChars: 160_000_000 } as const;
 const PdfPageRenderSchema = z.object({ page: z.number().int().min(1).max(5000), width: z.number().int().min(1).max(4000), height: z.number().int().min(1).max(6000), dataUrl: z.string().max(EXPORT_LIMITS.pageDataUrlChars).regex(/^data:image\/(?:jpeg|png);base64,[A-Za-z0-9+/]+={0,2}$/) });
 export const ExportFinishSchema = z.object({
   token: IdSchema,
@@ -199,6 +210,7 @@ export interface ChannelInputs {
   "notebooks:create": z.infer<typeof CreateNotebookInputSchema>;
   "notebooks:rename": z.infer<typeof RenameNotebookInputSchema>;
   "notebooks:delete": { id: number };
+  "notebooks:customize": z.infer<typeof CustomizeNotebookInputSchema>;
   "folders:list": null;
   "folders:create": z.infer<typeof CreateFolderInputSchema>;
   "folders:rename": z.infer<typeof RenameFolderInputSchema>;

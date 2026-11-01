@@ -5,7 +5,7 @@ const validChannels = new Set<string>([
   "notes:backlinks","notes:search","pdf:list","pdf:save","pdf:delete",
   "notes:find", "notes:favorite", "notes:pin", "notes:delete", "notes:restore", "notes:purge",
   "external:open", "notes:emptyTrash", "notebooks:list", "notebooks:create", "notebooks:rename",
-  "notebooks:delete", "folders:list", "folders:create", "folders:rename", "folders:move", "folders:delete", "tags:list", "tags:create", "tags:rename", "tags:setColor", "tags:delete", "tags:attach", "tags:detach",
+  "notebooks:delete", "notebooks:customize", "folders:list", "folders:create", "folders:rename", "folders:move", "folders:delete", "tags:list", "tags:create", "tags:rename", "tags:setColor", "tags:delete", "tags:attach", "tags:detach",
   "counts:get", "theme:get", "theme:set", "attachments:list", "attachments:save",
   "images:save",
   "tasks:list","tasks:create","tasks:update","tasks:delete","tasks:reminder-due","events:list","events:create","events:update","events:delete",
@@ -28,6 +28,14 @@ ipcRenderer.on("caderno:open-note", (_event, noteId: unknown) => {
 });
 
 contextBridge.exposeInMainWorld("cadernoDesktop", {
+  onPrepareClipAppend(listener:(value:{requestId:string;noteId:string})=>Promise<void>){const handler=async(_event:Electron.IpcRendererEvent,value:{requestId:string;noteId:string})=>{try{await listener(value);ipcRenderer.send("caderno:clip-append-ready",{requestId:value.requestId,ok:true});}catch{ipcRenderer.send("caderno:clip-append-ready",{requestId:value.requestId,ok:false});}};ipcRenderer.on("caderno:prepare-clip-append",handler);return()=>ipcRenderer.removeListener("caderno:prepare-clip-append",handler);},
+  onClipAppendFinished(listener:(value:unknown)=>void){const handler=(_event:Electron.IpcRendererEvent,value:unknown)=>listener(value);ipcRenderer.on("caderno:clip-append-finished",handler);return()=>ipcRenderer.removeListener("caderno:clip-append-finished",handler);},
+  onAttachmentJobsChanged(listener:()=>void){const handler=()=>listener();ipcRenderer.on("attachment-jobs-changed",handler);return()=>ipcRenderer.removeListener("attachment-jobs-changed",handler);},
+  windowControls: process.platform === "win32" ? {
+    minimize: () => ipcRenderer.send("window:control", "minimize"),
+    maximize: () => ipcRenderer.send("window:control", "maximize"),
+    close: () => ipcRenderer.send("window:control", "close"),
+  } : undefined,
   onClipperCapture(listener:()=>void){const handler=()=>listener();ipcRenderer.on('clipper-note-created',handler);return()=>ipcRenderer.removeListener('clipper-note-created',handler);},
   onExternalDataChange(listener:()=>void){const handler=()=>listener();ipcRenderer.on('caderno-external-data-changed',handler);return()=>ipcRenderer.removeListener('caderno-external-data-changed',handler);},
   onOpenNote(listener:(noteId:string)=>void){openNoteListeners.add(listener);while(pendingOpenNotes.length)listener(pendingOpenNotes.shift()!);return()=>openNoteListeners.delete(listener);},

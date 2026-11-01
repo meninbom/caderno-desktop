@@ -11,6 +11,7 @@ const archive = path.join(root, packageDir, 'win-unpacked', 'resources', 'app.as
 const extracted = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'caderno-asar-verify-'));
 asar.extractAll(archive, extracted);
 const files = [
+  ['dist/index.html', path.join(root, 'dist', 'index.html')],
   ['dist/caderno.png', path.join(root, 'dist', 'caderno.png')],
   ...fs.readdirSync(path.join(root, 'dist', 'assets')).map(name => [`dist/assets/${name}`, path.join(root, 'dist', 'assets', name)]),
   ...fs.readdirSync(path.join(root, 'dist', 'font-licenses')).map(name => [`dist/font-licenses/${name}`, path.join(root, 'dist', 'font-licenses', name)]),

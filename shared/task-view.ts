@@ -15,7 +15,8 @@ export function filterTasks(tasks: Task[], options: { status: TaskStatusFilter; 
 }
 
 export function groupTasks(tasks: Task[], now = Date.now()): TaskGroups {
-  const today = dayStart(now), tomorrow = today + 86400000, afterWeek = today + 8 * 86400000;
+  // Calendar-day arithmetic: a 23h/25h day (DST) must not shift the "today" and "next 7 days" boundaries.
+  const today = dayStart(now), start = new Date(today), tomorrow = new Date(start).setDate(start.getDate() + 1), afterWeek = new Date(start).setDate(start.getDate() + 8);
   const groups: TaskGroups = { overdue: [], today: [], next: [], later: [], undated: [], completed: [] };
   for (const task of tasks) {
     if (task.done) groups.completed.push(task);
